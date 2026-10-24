@@ -8,9 +8,9 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node --test tests/*.test.js",
+    "test": "node scripts/test.mjs",
     "test:e2e": "playwright test",
-    "generate:examples": "node scripts/generate-examples.mjs",
+    "generate:examples": "node --wasm-num-compilation-tasks=1 --liftoff-only scripts/generate-examples.mjs",
     "predev": "node scripts/prepare-yosys.mjs",
     "prebuild": "node scripts/prepare-yosys.mjs"
   },
