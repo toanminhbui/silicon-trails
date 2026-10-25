@@ -6,6 +6,12 @@ export const BUILDER_TYPES = Object.freeze({
   switch: { label: 'Switch · 1 bit', kind: 'input', ports: [port('Y', 'output', 1)] },
   output: { label: 'Output · 8 bit', kind: 'output', ports: [port('A', 'input')] },
   add: { label: 'ADD', kind: 'alu', cell: '$add', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
+  sub: { label: 'SUB', kind: 'alu', cell: '$sub', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
+  mul: { label: 'MUL', kind: 'alu', cell: '$mul', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
+  eq: { label: 'Equal', kind: 'control', cell: '$eq', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output', 1)] },
+  lt: { label: 'Less than', kind: 'control', cell: '$lt', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output', 1)] },
+  shl: { label: 'Shift left', kind: 'alu', cell: '$shl', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
+  shr: { label: 'Shift right', kind: 'alu', cell: '$shr', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
   and: { label: 'AND', kind: 'logic', cell: '$and', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
   or: { label: 'OR', kind: 'logic', cell: '$or', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
   xor: { label: 'XOR', kind: 'logic', cell: '$xor', ports: [port('A', 'input'), port('B', 'input'), port('Y', 'output')] },
@@ -17,6 +23,8 @@ export const BUILDER_TYPES = Object.freeze({
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const inputsOf = (type) => BUILDER_TYPES[type].ports.filter((p) => p.direction === 'input');
 const outputsOf = (type) => BUILDER_TYPES[type].ports.filter((p) => p.direction === 'output');
+const verilogRange = (width) => width === 1 ? '' : `[${width - 1}:0] `;
+const BINARY_OPERATORS = { add: '+', sub: '-', mul: '*', eq: '==', lt: '<', shl: '<<', shr: '>>', and: '&', or: '|', xor: '^' };
 
 /** The editor compiles its cables into the same RTL cell netlist as Yosys. */
 export class CircuitBuilder {
@@ -69,7 +77,7 @@ export class CircuitBuilder {
   setInput(nodeId, value) {
     const node = this.nodes.get(nodeId);
     if (!node || !['input', 'switch'].includes(node.type)) throw new Error(`${nodeId} is not an editable input`);
-    const width = node.type === 'switch' ? 1 : 8;
+    const width = outputsOf(node.type)[0].width;
     if (value !== null && (!Number.isInteger(value) || value < 0 || value >= 2 ** width)) throw new Error(`${nodeId} requires an unsigned ${width}-bit integer or null`);
     node.value = value;
   }
@@ -135,9 +143,12 @@ export class CircuitBuilder {
         let parameters;
         if (node.type === 'register') {
           connections.CLK = [2]; directions.CLK = 'input';
-          parameters = { WIDTH: 8, CLK_POLARITY: 1, EN_POLARITY: 1 };
-        } else if (node.type === 'mux') parameters = { WIDTH: 8 };
-        else parameters = { A_WIDTH: 8, B_WIDTH: 8, Y_WIDTH: 8, A_SIGNED: 0, B_SIGNED: 0 };
+          parameters = { WIDTH: connections.Q.length, CLK_POLARITY: 1, EN_POLARITY: 1 };
+        } else if (node.type === 'mux') parameters = { WIDTH: connections.Y.length };
+        else {
+          parameters = { A_WIDTH: connections.A.length, Y_WIDTH: connections.Y.length, A_SIGNED: 0 };
+          if (connections.B) { parameters.B_WIDTH = connections.B.length; parameters.B_SIGNED = 0; }
+        }
         cells[node.id] = { type: spec.cell, parameters, attributes: { src: `builder:${node.id}` }, port_directions: directions, connections };
         for (const p of outputsOf(node.type)) netnames[`${node.id}_${p.name}`] = { hide_name: 0, bits: [...connections[p.name]], attributes: {} };
       }
@@ -153,7 +164,7 @@ export class CircuitBuilder {
       const bits = ['input', 'switch', 'output'].includes(node.type)
         ? module.ports[node.id].bits : module.cells[node.id].connections[output.name];
       return {
-        ...clone(node), kind: spec.kind, width: node.type === 'switch' ? 1 : 8,
+        ...clone(node), kind: spec.kind, width: bits.length,
         ports: clone(spec.ports), bits: [...bits], source: `builder:${node.id}`, scope: 'top',
         ...(['input', 'switch'].includes(node.type) ? { inputName: node.id }
           : node.type === 'output' ? { outputName: node.id } : { cellId: node.id, valuePort: output.name }),
@@ -204,15 +215,15 @@ export class CircuitBuilder {
       return edge ? signalName(edge.from, edge.fromPort) : `${p.width}'b${'x'.repeat(p.width)}`;
     };
     for (const node of this.nodes.values()) {
-      if (['input', 'switch'].includes(node.type)) topPorts.push(`input wire ${node.type === 'switch' ? '' : '[7:0] '}${node.id}`);
-      if (node.type === 'output') topPorts.push(`output wire [7:0] ${node.id}`);
+      if (['input', 'switch'].includes(node.type)) topPorts.push(`input wire ${verilogRange(outputsOf(node.type)[0].width)}${node.id}`);
+      if (node.type === 'output') topPorts.push(`output wire ${verilogRange(inputsOf(node.type)[0].width)}${node.id}`);
     }
     lines.push(`module top(\n  ${topPorts.join(',\n  ')}\n);`);
     for (const node of this.nodes.values()) {
       const spec = BUILDER_TYPES[node.type];
       if (['input', 'switch', 'output'].includes(node.type)) continue;
       const out = outputsOf(node.type)[0];
-      lines.push(`  ${node.type === 'register' ? 'reg' : 'wire'} [7:0] ${signalName(node.id, out.name)};`);
+      lines.push(`  ${node.type === 'register' ? 'reg' : 'wire'} ${verilogRange(out.width)}${signalName(node.id, out.name)};`);
     }
     for (const node of this.nodes.values()) {
       const spec = BUILDER_TYPES[node.type];
@@ -223,8 +234,8 @@ export class CircuitBuilder {
       else if (node.type === 'register') lines.push(`  always @(posedge clk) if (${get('EN')}) ${y} <= ${get('D')};`);
       else if (node.type === 'mux') lines.push(`  assign ${y} = ${get('S')} ? ${get('B')} : ${get('A')};`);
       else if (node.type === 'not') lines.push(`  assign ${y} = ~${get('A')};`);
-      else if (['add', 'and', 'or', 'xor'].includes(node.type)) {
-        const op = { add: '+', and: '&', or: '|', xor: '^' }[node.type];
+      else if (Object.hasOwn(BINARY_OPERATORS, node.type)) {
+        const op = BINARY_OPERATORS[node.type];
         lines.push(`  assign ${y} = ${get('A')} ${op} ${get('B')};`);
       }
     }

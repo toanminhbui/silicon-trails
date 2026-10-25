@@ -107,3 +107,61 @@ test('netlist adapter preserves actual sliced bus wiring and constant/unknown in
   assert.equal(graph.nodes.find((node) => node.cellId === 'gate').source, 'demo.v:2.1-2.12');
   assert.equal(getGraphSignals(graph, sim).nodeValues['output:y'].value, null);
 });
+
+function controlCircuit() {
+  const builder = new CircuitBuilder({ empty: true });
+  const a = builder.add('input'), b = builder.add('input');
+  const eq = builder.add('eq'), lt = builder.add('lt'), mux = builder.add('mux');
+  const register = builder.add('register'), output = builder.add('output');
+  for (const target of [eq, lt, mux]) {
+    builder.connect({ from: a, to: target, toPort: 'A' });
+    builder.connect({ from: b, to: target, toPort: 'B' });
+  }
+  builder.connect({ from: lt, to: mux, toPort: 'S' });
+  builder.connect({ from: eq, to: register, toPort: 'EN' });
+  builder.connect({ from: mux, to: register, toPort: 'D' });
+  builder.connect({ from: register, fromPort: 'Q', to: output });
+  return { builder, a, b, eq, lt, mux, register, output };
+}
+
+test('one-bit comparisons select a mux and enable a register with unsigned operands', () => {
+  const { builder, a, b, eq, lt, mux, output } = controlCircuit();
+  const sim = simulate(builder);
+  sim.setInput(a, 128).setInput(b, 127).settle();
+  assert.equal(sim.getCellPorts(lt).Y, 0, '128 is greater than 127 in unsigned arithmetic');
+  assert.equal(sim.getCellPorts(mux).Y, 128);
+  sim.tick();
+  assert.equal(sim.getPort(output), null, 'unequal inputs leave the initially unknown register disabled');
+  sim.setInput(a, 7).setInput(b, 7).tick();
+  assert.equal(sim.getCellPorts(eq).Y, 1);
+  assert.equal(sim.getPort(output), 7);
+  sim.setInput(a, 10).setInput(b, 250).tick();
+  assert.equal(sim.getCellPorts(lt).Y, 1);
+  assert.equal(sim.getCellPorts(mux).Y, 250);
+  assert.equal(sim.getPort(output), 7, 'the comparator-controlled enable retains the previous value');
+  assert.equal(builder.getDesign().nodes.find(node => node.id === eq).width, 1);
+  assert.equal(builder.getNetlist().modules.top.cells[lt].parameters.Y_WIDTH, 1);
+  assert.throws(() => builder.connect({ from: eq, to: mux, toPort: 'A' }), /width mismatch/);
+  const restored = CircuitBuilder.fromJSON(builder.toJSON());
+  assert.deepEqual(restored.getNetlist(), builder.getNetlist());
+});
+
+test('subtraction, multiplication and logical shifts wrap or zero-fill eight-bit results', () => {
+  const builder = new CircuitBuilder({ empty: true });
+  const a = builder.add('input'), b = builder.add('input');
+  const operations = Object.fromEntries(['sub', 'mul', 'shl', 'shr'].map(type => [type, builder.add(type)]));
+  for (const id of Object.values(operations)) {
+    builder.connect({ from: a, to: id, toPort: 'A' });
+    builder.connect({ from: b, to: id, toPort: 'B' });
+  }
+  const sim = simulate(builder);
+  for (const [left, right] of [[1, 2], [129, 1], [255, 7], [128, 8], [255, 255]]) {
+    sim.setInput(a, left).setInput(b, right).settle();
+    assert.equal(sim.getCellPorts(operations.sub).Y, (left - right) & 255);
+    assert.equal(sim.getCellPorts(operations.mul).Y, (left * right) & 255);
+    assert.equal(sim.getCellPorts(operations.shl).Y, right >= 8 ? 0 : (left << right) & 255);
+    assert.equal(sim.getCellPorts(operations.shr).Y, right >= 8 ? 0 : left >>> right);
+  }
+  sim.setInput(a, 128).setInput(b, 1).settle();
+  assert.equal(sim.getCellPorts(operations.shr).Y, 64, 'right shift is logical rather than sign-extending');
+});

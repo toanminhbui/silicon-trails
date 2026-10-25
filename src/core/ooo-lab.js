@@ -146,6 +146,8 @@ export class OoOLab {
     if (entry.physDest !== null) {
       this.physical[entry.physDest] = {ready:true,value:job.value};
       this._emit('writeback','physical-registers',{id:entry.id,physical:entry.physDest,value:job.value});
+      for (const consumer of this.reservationStations) if (consumer.src1===entry.physDest||consumer.src2===entry.physDest) this._emit('wakeup','reservation-stations',{id:consumer.robId,producer:entry.id,physical:entry.physDest,value:job.value});
+      for (const consumer of this.lsq) if (consumer.baseTag===entry.physDest||consumer.dataTag===entry.physDest) this._emit('wakeup','lsq',{id:consumer.robId,producer:entry.id,physical:entry.physDest,value:job.value});
     }
     const memory = this.lsq.find(item => item.robId === entry.id);
     if (memory) {memory.done = true;memory.value = job.value;}
@@ -161,7 +163,7 @@ export class OoOLab {
     // Store data may wake after its address has already been generated.
     for (const entry of this.lsq) {
       if (entry.op !== 'STORE' || entry.done || entry.address === null || !this._ready(entry.dataTag)) continue;
-      entry.value = this._value(entry.dataTag);entry.done = true;
+      entry.value = this._value(entry.dataTag);entry.done = true;entry.blockedBy = null;
       const rob = this._rob(entry.robId);rob.ready = true;rob.value = entry.value;rob.completedAt = this.cycle;
       this.stats.completed++;
       this._emit('store-ready','lsq',{id:entry.robId,address:entry.address,value:entry.value});
@@ -184,11 +186,14 @@ export class OoOLab {
 
   _issueMemory() {
     if (this.units.lsu) return;
+    let generatedAddress = false;
     for (const entry of this.lsq) {
       if (entry.done || entry.started) continue;
       if (entry.address === null) {
+        if (generatedAddress) continue;
         if (!this._ready(entry.baseTag)) {entry.blockedBy = 'base-register';continue;}
         entry.address = (this._value(entry.baseTag)+entry.offset) & 255;
+        generatedAddress = true;
         this._emit('address','lsq',{id:entry.robId,address:entry.address});
         // One address generation / memory launch per cycle. A store can wait
         // for data without consuming the memory execution unit.
@@ -196,7 +201,7 @@ export class OoOLab {
           this.stats.issued++;
           this._emit('issue','lsq',{id:entry.robId,pc:entry.pc,op:'STORE',address:entry.address});
           if (this._ready(entry.dataTag)) {
-            entry.value = this._value(entry.dataTag);entry.done = true;
+            entry.value = this._value(entry.dataTag);entry.done = true;entry.blockedBy = null;
             const rob = this._rob(entry.robId);rob.ready = true;rob.value = entry.value;rob.completedAt = this.cycle;
             this.stats.completed++;
             this._emit('store-ready','lsq',{id:entry.robId,address:entry.address,value:entry.value});

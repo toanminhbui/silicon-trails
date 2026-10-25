@@ -76,7 +76,7 @@ export function getOooOverviewSignals(graph,lab) {
     if (name==='alu-issue'||name==='mul-issue') {event=latest(event=>event.type==='issue'&&event.unit===(name==='alu-issue'?'alu':'mul'));return event?1:null;}
     if (name==='alu-complete'||name==='mul-complete'||name==='load-complete') {event=latest(event=>event.type==='complete'&&event.unit===(name==='alu-complete'?'alu':name==='mul-complete'?'mul':'lsu'));field='value';}
     if (name==='load-issue') {event=latest(event=>event.type==='issue'&&event.unit==='lsu');field='address';}
-    if (name==='writeback') {event=latest(event=>event.type==='writeback');field='physical';}
+    if (name==='writeback') {event=latest(event=>event.type==='wakeup'&&event.unit==='reservation-stations');field='physical';}
     if (name==='forward') {event=latest(event=>event.type==='forward');field='value';}
     if (name==='store-ready') {event=latest(event=>event.type==='store-ready');return event?1:null;}
     if (name==='complete') {event=latest(event=>event.type==='writeback');return event?1:null;}

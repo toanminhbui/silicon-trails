@@ -45,6 +45,7 @@ test('same-bundle RAW and later WAR/WAW dependencies use captured physical sourc
   assert.equal(result.registers[2],6);
   assert.equal(result.registers[3],9,'older multiply uses old R1 rather than the younger overwrite');
   assert.equal(result.registers[4],15);
+  assert.ok(lab.events.some(event=>event.type==='wakeup'&&event.id===2&&event.producer===1),'writeback explicitly wakes the dependent reservation station');
 });
 
 test('loads wait for unknown older store addresses instead of reading stale RAM',() => {
