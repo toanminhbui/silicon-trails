@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { VoxelTerrain } from './terrain.js';
+import { MeadowPlayer } from './player.js';
 
 const PALETTE = {
   register: 0x58b9ff, alu: 0xffb84c, control: 0xbd8aff,
@@ -37,10 +39,15 @@ function roundedRect(context, x, y, w, h, radius) {
 
 /** Spatial circuit view. World coordinates describe placement, never signal delay. */
 export class CircuitWorld {
-  constructor(container, { onSelect, onConnect, onPlace } = {}) {
+  constructor(container, { onSelect, onConnect, onPlace, onPause, onMove, onTarget } = {}) {
     this.container = container;
-    this.callbacks = { onSelect, onConnect, onPlace };
-    this.mode = 'orbit';
+    this.callbacks = { onSelect, onConnect, onPlace, onPause, onMove, onTarget };
+    this.mode = 'walk';
+    this.paused = true;
+    this.panorama = false;
+    this.lastTarget = null;
+    this.targetTimer = 0;
+    this.moveTimer = 0;
     this.tool = null;
     this.nodes = new Map();
     this.edges = new Map();
@@ -73,22 +80,27 @@ export class CircuitWorld {
     this.canvas = this.renderer.domElement;
     this.canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;touch-action:none;';
     this.canvas.tabIndex = 0;
-    this.canvas.setAttribute('aria-label', 'Interactive 3D circuit workshop. Drag to orbit, scroll to zoom. Walk mode uses W A S D and Q E.');
+    this.canvas.setAttribute('aria-label', 'Voxel computer meadow. W A S D or arrows to walk, Shift to sprint, Space to jump. Mouse to look, E to inspect. Escape pauses.');
     container.appendChild(this.canvas);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.shadowMap.enabled = true;
+    const gl = this.renderer.getContext();
+    const rendererInfo = gl.getExtension('WEBGL_debug_renderer_info');
+    const gpuName = rendererInfo ? gl.getParameter(rendererInfo.UNMASKED_RENDERER_WEBGL) : '';
+    this.softwareRenderer = /swiftshader|llvmpipe|software|lavapipe/i.test(gpuName);
+    this.renderer.setPixelRatio(this.softwareRenderer ? 0.85 : Math.min(window.devicePixelRatio || 1, 1.75));
+    this.renderer.shadowMap.enabled = !this.softwareRenderer;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.22;
+    this.renderer.toneMappingExposure = 1.1;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x080f1c);
-    this.scene.fog = new THREE.FogExp2(0x080f1c, 0.0065);
-    this.camera = new THREE.PerspectiveCamera(43, 1, 0.1, 700);
+    this.scene.background = new THREE.Color(0x8ec8ed);
+    this.scene.fog = new THREE.Fog(0xa9d4e4, 48, 170);
+    this.camera = new THREE.PerspectiveCamera(72, 1, 0.08, 380);
     this.camera.position.set(28, 30, 35);
     this.controls = new OrbitControls(this.camera, this.canvas);
-    this.controls.enableDamping = true;
+    this.controls.enableDamping = false;
+    this.controls.enabled = false;
     this.controls.dampingFactor = 0.085;
     this.controls.maxPolarAngle = Math.PI * 0.485;
     this.controls.minDistance = 5;
@@ -104,20 +116,21 @@ export class CircuitWorld {
     this.boardGroup = new THREE.Group();
     this.scene.add(this.boardGroup, this.edgeGroup, this.nodeGroup);
 
-    const ambient = new THREE.HemisphereLight(0xc6e2ff, 0x172825, 2.2);
+    const ambient = new THREE.HemisphereLight(0xd9eeff, 0x7b8755, 2.0);
     this.scene.add(ambient);
-    const sun = new THREE.DirectionalLight(0xffe3ba, 3.2);
-    sun.position.set(-18, 35, 18);
+    const sun = new THREE.DirectionalLight(0xfff1cc, 2.9);
+    sun.position.set(-32, 58, 24);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.left = sun.shadow.camera.bottom = -65;
     sun.shadow.camera.right = sun.shadow.camera.top = 65;
-    sun.shadow.camera.far = 130;
+    sun.shadow.camera.far = 170;
     sun.shadow.normalBias = 0.045;
     this.scene.add(sun);
-    const rim = new THREE.DirectionalLight(0x739fff, 2.1);
+    const rim = new THREE.DirectionalLight(0xb5dcff, 0.65);
     rim.position.set(12, 16, -26);
     this.scene.add(rim);
+    this.scene.add(this.camera);
 
     this.halo = new THREE.Group();
     const haloMaterial = new THREE.MeshBasicMaterial({ color: 0xf7dd86, transparent: true, opacity: 0.9 });
@@ -135,12 +148,34 @@ export class CircuitWorld {
     );
     this.connectionPreview.visible = false;
     this.scene.add(this.connectionPreview);
+    this.beacon = new THREE.Group();
+    const beaconMaterial = new THREE.MeshBasicMaterial({ color: 0xffdd58, transparent: true, opacity: 0.85 });
+    this.beacon.add(this.box(0.13, 6, 0.13, -2.7, 3, 0, beaconMaterial));
+    this.beacon.add(this.box(1.5, 0.9, 0.1, -2.0, 5.35, 0, beaconMaterial));
+    this.beacon.add(this.box(0.65, 0.65, 0.65, 0, 4.9, 0, beaconMaterial));
+    this.beacon.visible = false;
+    this.scene.add(this.beacon);
+    this.hand = new THREE.Group();
+    const sleeve = new THREE.MeshLambertMaterial({ color: 0x4d8ba4 });
+    const skin = new THREE.MeshLambertMaterial({ color: 0xcfa580 });
+    const held = new THREE.MeshLambertMaterial({ color: 0x69bd92 });
+    this.hand.add(this.box(0.23, 0.52, 0.26, 0, -0.12, 0, sleeve));
+    this.hand.add(this.box(0.22, 0.24, 0.25, 0, 0.18, 0, skin));
+    this.hand.add(this.box(0.28, 0.28, 0.28, -0.04, 0.28, -0.09, held));
+    this.hand.children[2].visible = false;
+    this.hand.position.set(0.55, -0.49, -0.9);
+    this.hand.rotation.set(-0.18, -0.28, -0.22);
+    this.hand.visible = false;
+    this.hand.traverse((object) => { object.castShadow = false; object.receiveShadow = false; });
+    this.camera.add(this.hand);
 
     this.handlers = {
       down: (e) => this.pointerDown(e), move: (e) => this.pointerMove(e), up: (e) => this.pointerUp(e),
+      lockedMove: (e) => { if (document.pointerLockElement === this.canvas && !this.paused) this.look(e.movementX, e.movementY); },
+      lock: () => this.pointerLockChanged(),
       leave: () => { this.ghost.visible = false; this.press = null; },
       keydown: (e) => this.keyDown(e), keyup: (e) => this.keys.delete(e.code),
-      blur: () => { this.keys.clear(); this.press = null; },
+      blur: () => { this.keys.clear(); this.press = null; if (!this.paused && !this.panorama) this.requestPause(); },
       context: (e) => e.preventDefault(),
     };
     this.canvas.addEventListener('pointerdown', this.handlers.down);
@@ -148,12 +183,16 @@ export class CircuitWorld {
     this.canvas.addEventListener('pointerup', this.handlers.up);
     this.canvas.addEventListener('pointerleave', this.handlers.leave);
     this.canvas.addEventListener('contextmenu', this.handlers.context);
-    this.canvas.addEventListener('keydown', this.handlers.keydown);
+    window.addEventListener('keydown', this.handlers.keydown);
     window.addEventListener('keyup', this.handlers.keyup);
     window.addEventListener('blur', this.handlers.blur);
+    document.addEventListener('mousemove', this.handlers.lockedMove);
+    document.addEventListener('pointerlockchange', this.handlers.lock);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
     this.createBoard();
+    this.player = new MeadowPlayer(this.terrain, () => [...this.nodes.values()].map((item) => ({ x: item.group.position.x, z: item.group.position.z })));
+    this.player.spawn();
     this.resize();
     this.animate = this.animate.bind(this);
     this.frame = requestAnimationFrame(this.animate);
@@ -201,48 +240,21 @@ export class CircuitWorld {
   }
 
   createBoard() {
+    if (this.terrain) { this.scene.remove(this.terrain.group); this.terrain.dispose(); }
     this.clearGroup(this.boardGroup);
-    const { x, z, width, depth } = this.bounds;
-    const surface = new THREE.MeshStandardMaterial({ color: 0x16262c, roughness: 0.88, metalness: 0.18 });
-    const base = new THREE.MeshStandardMaterial({ color: 0x0d1721, roughness: 0.87, metalness: 0.1 });
-    const edge = new THREE.MeshStandardMaterial({ color: 0x293b3d, roughness: 0.82 });
-    const moss = new THREE.MeshStandardMaterial({ color: 0x42634d, roughness: 1 });
-    this.boardGroup.add(this.box(width, 0.65, depth, x, -0.48, z, surface));
-    this.boardGroup.add(this.box(width - 1.0, 1.5, depth - 1.0, x, -1.4, z, base));
-    this.boardGroup.add(this.box(width + 0.15, 0.2, depth + 0.15, x, -0.82, z, edge));
-
-    const vertices = [];
-    const left = x - width / 2;
-    const right = x + width / 2;
-    const back = z - depth / 2;
-    const front = z + depth / 2;
-    for (let gx = Math.ceil(left); gx <= right; gx++) vertices.push(gx, -0.145, back, gx, -0.145, front);
-    for (let gz = Math.ceil(back); gz <= front; gz++) vertices.push(left, -0.145, gz, right, -0.145, gz);
-    const gridGeometry = new THREE.BufferGeometry();
-    gridGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    this.boardGroup.add(new THREE.LineSegments(gridGeometry,
-      new THREE.LineBasicMaterial({ color: 0x4b7476, transparent: true, opacity: 0.18 })));
-
-    const light = new THREE.MeshBasicMaterial({ color: 0x71b2bd });
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        const cx = x + sx * (width / 2 - 1.1);
-        const cz = z + sz * (depth / 2 - 1.1);
-        this.boardGroup.add(this.box(0.4, 0.45, 0.4, cx, 0.05, cz, light));
-        for (let i = 0; i < 5; i++) {
-          const size = 0.55 + ((i * 7 + (sx + sz + 2) * 3) % 5) * 0.16;
-          this.boardGroup.add(this.box(size, 0.22, size, cx + sx * (0.1 + i * 0.4), -0.08, cz + sz * (i % 3) * 0.35, moss));
-        }
-      }
-    }
-
-    // A quiet surrounding floor keeps the island legible while walking.
-    this.boardGroup.add(this.box(500, 0.3, 500, x, -2.55, z,
-      new THREE.MeshStandardMaterial({ color: 0x0a1420, roughness: 1 })));
-    const stamp = this.label('SILICON TRAILS', { scale: Math.min(width * 0.25, 6), color: '#83a1a9' });
-    stamp.position.set(x, 0.05, front - 1.0);
-    stamp.material.opacity = 0.65;
-    this.boardGroup.add(stamp);
+    this.terrain = new VoxelTerrain(this.bounds);
+    this.scene.add(this.terrain.group);
+    if (this.player) this.player.terrain = this.terrain;
+    const wood = new THREE.MeshLambertMaterial({ color: 0x88603f });
+    this.boardGroup.add(this.box(0.22, 2.4, 0.22, -6.8, 1.2, 21, wood));
+    this.boardGroup.add(this.box(0.22, 2.4, 0.22, -3.2, 1.2, 21, wood));
+    this.boardGroup.add(this.box(4.2, 1.25, 0.18, -5, 2.0, 21, wood));
+    const sign = this.label('SILICON TRAILS', { scale: 4.05, color: '#f6edc8' });
+    sign.position.set(-5, 2.12, 21.15);
+    this.boardGroup.add(sign);
+    const subtitle = this.label('A world made of small things.', { scale: 3.6, color: '#c4e0c1' });
+    subtitle.position.set(-5, 1.65, 21.16);
+    this.boardGroup.add(subtitle);
   }
 
   autoPositions(nodes) {
@@ -261,7 +273,7 @@ export class CircuitWorld {
 
   setDesign({ nodes = [], edges = [] } = {}) {
     if (this.disposed) return;
-    const preserveCamera = this.mode === 'build' && nodes.some((node) => this.nodes.has(node.id));
+    const preserveCamera = this.mode !== 'orbit' || nodes.some((node) => this.nodes.has(node.id));
     this.design = { nodes, edges };
     if (!this.renderer) { this.resize(); return; }
     this.clearGroup(this.nodeGroup);
@@ -291,6 +303,7 @@ export class CircuitWorld {
     this.createBoard();
     edges.forEach((edge, index) => this.createEdge(edge, index));
     if (!preserveCamera) this.resetCamera();
+    this.setTutorialTarget(this.tutorialTargetId);
   }
 
   createNode(node) {
@@ -368,7 +381,7 @@ export class CircuitWorld {
         tag.userData.nodeId = node.id;
         tag.userData.port = port.name;
         tag.userData.direction = direction;
-        tag.visible = this.mode === 'build';
+        tag.visible = !!this.tool;
         tag.material.depthTest = false;
         tag.renderOrder = 5;
         portLabels.push(tag);
@@ -467,53 +480,141 @@ export class CircuitWorld {
     if (item) this.halo.position.copy(item.group.position);
   }
 
+  firstPerson() { return this.mode === 'walk' || this.mode === 'build'; }
+
   focus(id) {
     const item = this.nodes.get(id);
     if (!item || !this.renderer) return;
     this.select(id);
+    if (this.firstPerson()) { this.teleportToNode(id); return; }
     const center = item.group.position.clone().add(new THREE.Vector3(0, 0.7, 0));
     this.flight = { target: center, position: center.clone().add(new THREE.Vector3(8, 8, 10)) };
   }
 
+  teleportToNode(id) {
+    const item = this.nodes.get(id);
+    if (!item || !this.player) return false;
+    this.panorama = false;
+    const center = item.group.position;
+    let target = [center.x, center.z + 5.5];
+    for (const [dx, dz] of [[0, 5.5], [5.5, 0], [-5.5, 0], [0, -5.5]]) {
+      if (!this.player.blocked(center.x + dx, center.z + dz)) { target = [center.x + dx, center.z + dz]; break; }
+    }
+    this.player.spawn(...target);
+    this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, this.player.eyeHeight, 0));
+    this.camera.lookAt(center.clone().add(new THREE.Vector3(0, 1.25, 0)));
+    this.camera.updateMatrixWorld(true);
+    this.flight = null;
+    this.callbacks.onMove?.(this.getPlayerState());
+    this.lastTarget = null;
+    this.refreshTarget();
+    return true;
+  }
+
+  getPlayerState() {
+    return this.player?.state() || { position: [0, 0, 23], distanceWalked: 0, grounded: true };
+  }
+
+  setTutorialTarget(id) {
+    this.tutorialTargetId = id || null;
+    if (!this.beacon) return;
+    const item = this.nodes.get(id);
+    this.beacon.visible = !!item;
+    if (item) this.beacon.position.copy(item.group.position);
+  }
+
   resetCamera() {
     if (!this.renderer) return;
+    if (this.firstPerson()) { this.startWalk({ reset: true }); return; }
     const { x, z, width, depth } = this.bounds;
-    const distance = Math.max(width * 0.78, depth * 0.95, 24);
+    const distance = Math.max(width * 0.65, depth * 0.8, 24);
     const aspectFactor = Math.max(1, 1 / Math.max(0.45, this.camera.aspect));
-    this.camera.position.set(x + distance * 0.78 * aspectFactor, distance * 0.94 * aspectFactor, z + distance * aspectFactor);
+    this.camera.position.set(x + distance * 0.55 * aspectFactor, distance * 0.8 * aspectFactor, z + distance * aspectFactor);
     this.controls.target.set(x, 0.3, z);
     this.camera.lookAt(this.controls.target);
     this.flight = null;
     this.controls.update();
   }
 
+  setPaused(paused) {
+    this.paused = !!paused;
+    this.keys.clear();
+    this.press = null;
+    if (!this.renderer) return;
+    this.controls.enabled = !this.paused && this.mode === 'orbit';
+    this.hand.visible = !this.paused && this.firstPerson();
+    if (this.paused) {
+      this.ghost.visible = false;
+      if (document.pointerLockElement === this.canvas) {
+        this.ignoreUnlock = true;
+        document.exitPointerLock?.();
+      }
+    }
+  }
+
+  startWalk({ reset = true, lock = false } = {}) {
+    if (!this.renderer) return;
+    this.panorama = false;
+    this.mode = 'walk';
+    this.controls.enabled = false;
+    this.keys.clear();
+    this.flight = null;
+    this.camera.fov = 72;
+    this.camera.updateProjectionMatrix();
+    if (reset) {
+      this.player.spawn(0, 23);
+      this.player.distanceWalked = 0;
+    }
+    this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, this.player.eyeHeight, 0));
+    if (reset) this.camera.lookAt(0, 1.4, 0);
+    else if (this.walkQuaternion) this.camera.quaternion.copy(this.walkQuaternion);
+    this.camera.updateMatrixWorld(true);
+    this.canvas.style.cursor = 'crosshair';
+    this.refreshPortLabels();
+    if (lock && (!navigator.userActivation || navigator.userActivation.isActive)) this.capturePointer();
+    this.callbacks.onMove?.(this.getPlayerState());
+    this.lastTarget = null;
+    this.refreshTarget();
+  }
+
+  startPanorama() {
+    this.panorama = true;
+    this.setPaused(true);
+    if (!this.renderer) return;
+    this.controls.enabled = false;
+    this.camera.fov = 62;
+    this.camera.updateProjectionMatrix();
+  }
+
   setMode(mode) {
     if (!['orbit', 'walk', 'build'].includes(mode)) return;
+    if (mode === 'orbit' && this.firstPerson()) this.walkQuaternion = this.camera.quaternion.clone();
     this.mode = mode;
+    this.panorama = false;
     this.keys.clear();
     if (!this.renderer) return;
-    this.controls.enabled = mode !== 'walk';
-    for (const item of this.nodes.values()) item.portLabels.forEach((label) => { label.visible = mode === 'build'; });
-    this.canvas.style.cursor = mode === 'build' ? 'crosshair' : mode === 'walk' ? 'grab' : 'default';
+    this.controls.enabled = mode === 'orbit' && !this.paused;
+    this.refreshPortLabels();
+    this.canvas.style.cursor = mode === 'orbit' ? 'grab' : 'crosshair';
     this.ghost.visible = false;
     this.connectionStart = null;
     this.connectionPreview.visible = false;
-    if (mode === 'walk') {
-      this.flight = null;
-      const direction = new THREE.Vector3();
-      this.camera.getWorldDirection(direction);
-      this.camera.position.y = Math.max(3, Math.min(this.camera.position.y, 7));
-      direction.y = Math.max(-0.35, direction.y);
-      this.camera.lookAt(this.camera.position.clone().add(direction));
-      this.canvas.focus({ preventScroll: true });
+    this.flight = null;
+    if (mode === 'orbit') {
+      if (document.pointerLockElement === this.canvas) { this.ignoreUnlock = true; document.exitPointerLock?.(); }
+      this.camera.fov = 50;
+      this.camera.updateProjectionMatrix();
+      this.resetCamera();
     } else {
-      const direction = new THREE.Vector3();
-      this.camera.getWorldDirection(direction);
-      const distance = Math.max(8, this.camera.position.y / Math.max(0.15, -direction.y));
-      this.controls.target.copy(this.camera.position).addScaledVector(direction, Math.min(distance, 80));
-      this.controls.target.y = Math.max(0, this.controls.target.y);
-      this.controls.update();
+      this.camera.fov = 72;
+      this.camera.updateProjectionMatrix();
+      this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, this.player.eyeHeight, 0));
+      this.camera.lookAt(this.bounds.x, 1.3, this.bounds.z);
     }
+  }
+
+  refreshPortLabels() {
+    for (const item of this.nodes.values()) item.portLabels.forEach((label) => { label.visible = !!this.tool; });
   }
 
   setTool(typeOrNull) {
@@ -521,52 +622,97 @@ export class CircuitWorld {
     this.connectionStart = null;
     if (this.ghost) this.ghost.visible = false;
     if (this.connectionPreview) this.connectionPreview.visible = false;
+    this.refreshPortLabels();
+    if (this.hand) {
+      this.hand.children[2].visible = !!typeOrNull;
+      this.hand.children[2].material.color.set(typeOrNull === 'register' ? PALETTE.register : typeOrNull === 'add' ? PALETTE.alu : typeOrNull === 'mux' ? PALETTE.control : PALETTE.memory);
+    }
+  }
+
+  capturePointer() {
+    if (this.paused || !this.firstPerson() || document.pointerLockElement === this.canvas) return;
+    try { this.canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* Drag-to-look remains available. */ }
+  }
+
+  pointerLockChanged() {
+    const locked = document.pointerLockElement === this.canvas;
+    if (this.wasLocked && !locked && !this.paused && !this.ignoreUnlock) this.requestPause();
+    this.wasLocked = locked;
+    this.ignoreUnlock = false;
+    this.keys.clear();
+  }
+
+  requestPause() {
+    if (this.paused || this.panorama) return;
+    this.setPaused(true);
+    this.callbacks.onPause?.();
+  }
+
+  look(dx, dy) {
+    if (this.paused || !this.firstPerson()) return;
+    const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+    euler.y -= dx * 0.0024;
+    euler.x = Math.max(-1.46, Math.min(1.46, euler.x - dy * 0.0024));
+    this.camera.quaternion.setFromEuler(euler);
   }
 
   updatePointer(event) {
-    const rect = this.canvas.getBoundingClientRect();
-    this.pointer.set(((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
-      -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1);
+    if (document.pointerLockElement === this.canvas) this.pointer.set(0, 0);
+    else {
+      const rect = this.canvas.getBoundingClientRect();
+      this.pointer.set(((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+        -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1);
+    }
     this.raycaster.setFromCamera(this.pointer, this.camera);
   }
 
+  groundHit() {
+    if (!this.terrain) return null;
+    for (let distance = 0.4; distance <= 16; distance += 0.15) {
+      const point = this.raycaster.ray.at(distance, this.pointerWorld);
+      const height = this.terrain.heightAt(point.x, point.z);
+      if (point.y <= height + 0.03) return new THREE.Vector3(Math.round(point.x * 2) / 2, height, Math.round(point.z * 2) / 2);
+    }
+    return null;
+  }
+
   pointerDown(event) {
+    if (this.paused) return;
     this.canvas.focus({ preventScroll: true });
     this.press = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, moved: false, button: event.button };
-    if (this.mode === 'walk') this.canvas.style.cursor = 'grabbing';
     this.flight = null;
+    if (this.firstPerson() && event.button === 0) this.capturePointer();
   }
 
   pointerMove(event) {
+    if (this.paused) return;
     this.updatePointer(event);
-    if (this.press) {
+    if (this.press && document.pointerLockElement !== this.canvas) {
       const dx = event.clientX - this.press.lastX;
       const dy = event.clientY - this.press.lastY;
       if (Math.hypot(event.clientX - this.press.x, event.clientY - this.press.y) > 5) this.press.moved = true;
-      if (this.mode === 'walk' && this.press.moved) {
-        const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
-        euler.y -= dx * 0.004;
-        euler.x = Math.max(-1.35, Math.min(1.35, euler.x - dy * 0.004));
-        this.camera.quaternion.setFromEuler(euler);
-      }
+      if (this.firstPerson() && this.press.moved) this.look(dx * 1.5, dy * 1.5);
       this.press.lastX = event.clientX;
       this.press.lastY = event.clientY;
     }
-    if (this.mode === 'build' && this.tool && !['wire', 'connect'].includes(this.tool)) {
-      const hit = this.raycaster.ray.intersectPlane(this.floor, this.pointerWorld);
-      if (hit) {
-        this.ghost.visible = true;
-        this.ghost.position.set(Math.round(hit.x * 2) / 2, 0.2, Math.round(hit.z * 2) / 2);
-      }
+    this.updateBuildingPreview();
+  }
+
+  updateBuildingPreview() {
+    if (!this.tool || this.paused) { this.ghost.visible = false; return; }
+    if (!['wire', 'connect'].includes(this.tool)) {
+      const point = this.groundHit();
+      this.ghost.visible = !!point;
+      if (point) this.ghost.position.copy(point).add(new THREE.Vector3(0, 0.2, 0));
     }
-    if (this.connectionStart && this.mode === 'build') {
-      const hit = this.raycaster.ray.intersectPlane(this.floor, this.pointerWorld);
+    if (this.connectionStart) {
+      const point = this.groundHit() || this.raycaster.ray.at(8, new THREE.Vector3());
       const source = this.nodes.get(this.connectionStart.from);
-      if (hit && source) {
+      if (source) {
         const start = this.portPosition(source, this.connectionStart.fromPort, 'output');
         const positions = this.connectionPreview.geometry.attributes.position;
         positions.setXYZ(0, start.x, start.y + 0.12, start.z);
-        positions.setXYZ(1, hit.x, 0.35, hit.z);
+        positions.setXYZ(1, point.x, point.y + 0.35, point.z);
         positions.needsUpdate = true;
         this.connectionPreview.computeLineDistances();
         this.connectionPreview.visible = true;
@@ -574,21 +720,32 @@ export class CircuitWorld {
     }
   }
 
+  visibleHits() {
+    return this.raycaster.intersectObjects(this.pickables.filter((object) => object.visible), false)
+      .filter((hit) => !this.firstPerson() || hit.distance <= 15);
+  }
+
   pointerUp(event) {
     const press = this.press;
     this.press = null;
-    if (this.mode === 'walk') this.canvas.style.cursor = 'grab';
-    if (!press || press.moved || press.button !== 0) return;
+    if (this.paused || !press || press.moved || press.button !== 0) return;
     this.updatePointer(event);
-    const hits = this.raycaster.intersectObjects(this.pickables.filter((object) => object.visible), false);
-    if (this.mode === 'build' && this.tool && !['wire', 'connect'].includes(this.tool)) {
-      const position = this.raycaster.ray.intersectPlane(this.floor, this.pointerWorld);
-      if (position && !hits.length) this.callbacks.onPlace?.({ type: this.tool, position: [Math.round(position.x * 2) / 2, 0, Math.round(position.z * 2) / 2] });
+    this.interact(this.visibleHits());
+  }
+
+  interact(hits) {
+    if (this.paused) return;
+    if (this.tool && !['wire', 'connect'].includes(this.tool)) {
+      const position = this.groundHit();
+      if (position && !hits.length) this.callbacks.onPlace?.({ type: this.tool, position: position.toArray() });
       return;
     }
-    if (!hits.length) { this.select(null); this.callbacks.onSelect?.(null); return; }
+    if (!hits.length) {
+      if (!this.firstPerson()) { this.select(null); this.callbacks.onSelect?.(null); }
+      return;
+    }
     const hit = hits[0].object.userData;
-    if (this.mode === 'build' && ['wire', 'connect'].includes(this.tool)) {
+    if (['wire', 'connect'].includes(this.tool)) {
       const item = this.nodes.get(hit.nodeId);
       if (!this.connectionStart) {
         const port = (hit.direction === 'output' && hit.port) || item.node.ports?.find((p) => p.direction === 'output')?.name || 'out';
@@ -609,10 +766,41 @@ export class CircuitWorld {
     this.callbacks.onSelect?.(hit.nodeId);
   }
 
+  interactAtCenter() {
+    if (this.paused) return false;
+    this.camera.updateMatrixWorld(true);
+    this.nodeGroup.updateMatrixWorld(true);
+    this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const hits = this.visibleHits();
+    this.interact(hits);
+    return hits.length > 0;
+  }
+
+  refreshTarget() {
+    if (!this.renderer) return null;
+    this.camera.updateMatrixWorld(true);
+    this.nodeGroup.updateMatrixWorld(true);
+    this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const hits = this.visibleHits();
+    const id = hits[0]?.object.userData.nodeId || null;
+    const target = id ? { id, label: this.nodes.get(id)?.node.label || id, distance: hits[0].distance } : { id: null, label: '', distance: null };
+    if (target.id !== this.lastTarget?.id || Math.abs((target.distance || 0) - (this.lastTarget?.distance || 0)) > 0.2) {
+      this.lastTarget = target;
+      this.callbacks.onTarget?.(target);
+    }
+    return target;
+  }
+
   keyDown(event) {
-    if (event.code === 'Escape') { this.connectionStart = null; this.connectionPreview.visible = false; this.select(null); return; }
-    if (this.mode !== 'walk') return;
-    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
+    if (this.paused || event.target?.closest?.('input, textarea, select, [contenteditable=true], .cm-editor')) return;
+    if (event.code === 'Escape') { this.requestPause(); return; }
+    if (!this.firstPerson()) return;
+    if (event.code === 'KeyE') {
+      event.preventDefault();
+      if (!event.repeat) this.interactAtCenter();
+      return;
+    }
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
       event.preventDefault();
       this.keys.add(event.code);
       this.flight = null;
@@ -621,37 +809,43 @@ export class CircuitWorld {
 
   animate() {
     if (this.disposed) return;
-    const delta = Math.min(this.clock.getDelta(), 0.05);
+    const delta = Math.min(this.clock.getDelta(), 0.04);
     const time = this.clock.elapsedTime;
-    if (this.mode === 'walk' && this.keys.size) {
-      const forward = new THREE.Vector3();
-      this.camera.getWorldDirection(forward);
-      forward.y = 0;
-      forward.normalize();
-      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
-      const speed = delta * (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 19 : 8);
-      const has = (...keys) => keys.some((key) => this.keys.has(key));
-      if (has('KeyW', 'ArrowUp')) this.camera.position.addScaledVector(forward, speed);
-      if (has('KeyS', 'ArrowDown')) this.camera.position.addScaledVector(forward, -speed);
-      if (has('KeyD', 'ArrowRight')) this.camera.position.addScaledVector(right, speed);
-      if (has('KeyA', 'ArrowLeft')) this.camera.position.addScaledVector(right, -speed);
-      if (has('KeyE')) this.camera.position.y += speed;
-      if (has('KeyQ')) this.camera.position.y -= speed;
-      this.camera.position.y = Math.max(0.8, Math.min(80, this.camera.position.y));
+    if (this.panorama) {
+      const angle = time * 0.018 + 0.28;
+      this.camera.position.set(Math.sin(angle) * 24, 10.5 + Math.sin(time * 0.025) * 0.8, Math.cos(angle) * 27);
+      this.camera.lookAt(0, 1.5, 0);
+    } else if (this.firstPerson() && !this.paused) {
+      const moved = this.player.update(delta, this.keys, this.camera);
+      this.moveTimer += delta;
+      if (moved && this.moveTimer > 0.08) { this.moveTimer = 0; this.callbacks.onMove?.(this.getPlayerState()); }
+      this.hand.position.y = -0.49 + (moved && this.player.grounded ? Math.sin(this.player.distanceWalked * 7) * 0.025 : 0);
+      this.hand.visible = true;
+      this.targetTimer += delta;
+      if (this.targetTimer > 0.1) {
+        this.targetTimer = 0;
+        this.refreshTarget();
+        if (document.pointerLockElement === this.canvas) this.updateBuildingPreview();
+      }
     }
-    if (this.flight) {
+    if (this.flight && !this.firstPerson()) {
       const factor = 1 - Math.exp(-delta * 7);
       this.camera.position.lerp(this.flight.position, factor);
       this.controls.target.lerp(this.flight.target, factor);
-      if (this.mode === 'walk') this.camera.lookAt(this.flight.target);
       if (this.camera.position.distanceTo(this.flight.position) < 0.03) this.flight = null;
     }
-    if (this.mode !== 'walk') this.controls.update();
-    for (const item of this.edges.values()) {
-      if (item.active) item.pulse.position.copy(item.curve.getPoint((time * 0.24 + item.phase) % 1));
-    }
+    if (this.mode === 'orbit' && !this.paused) this.controls.update();
+    for (const item of this.edges.values()) if (item.active) item.pulse.position.copy(item.curve.getPoint((time * 0.24 + item.phase) % 1));
     if (this.halo.visible) this.halo.children.forEach((mesh) => { mesh.material.opacity = 0.75 + Math.sin(time * 3) * 0.15; });
-    this.renderer.render(this.scene, this.camera);
+    if (this.beacon.visible) {
+      this.beacon.children[2].rotation.y = time * 0.6;
+      this.beacon.children[2].position.y = 4.9 + Math.sin(time * 2.3) * 0.2;
+    }
+    if (this.terrain.cloudMesh) this.terrain.cloudMesh.position.x = Math.sin(time * 0.012) * 3;
+    if (time - (this.lastRenderTime || -1) > 1 / (this.softwareRenderer ? 12 : 45)) {
+      this.renderer.render(this.scene, this.camera);
+      this.lastRenderTime = time;
+    }
     this.frame = requestAnimationFrame(this.animate);
   }
 
@@ -696,6 +890,7 @@ export class CircuitWorld {
 
   dispose() {
     if (this.disposed) return;
+    if (this.canvas && document.pointerLockElement === this.canvas) { this.ignoreUnlock = true; document.exitPointerLock?.(); }
     this.disposed = true;
     this.resizeObserver?.disconnect();
     cancelAnimationFrame(this.frame);
@@ -704,11 +899,14 @@ export class CircuitWorld {
     this.canvas.removeEventListener('pointermove', this.handlers.move);
     this.canvas.removeEventListener('pointerup', this.handlers.up);
     this.canvas.removeEventListener('pointerleave', this.handlers.leave);
-    this.canvas.removeEventListener('keydown', this.handlers.keydown);
+    window.removeEventListener('keydown', this.handlers.keydown);
     this.canvas.removeEventListener('contextmenu', this.handlers.context);
     window.removeEventListener('keyup', this.handlers.keyup);
     window.removeEventListener('blur', this.handlers.blur);
+    document.removeEventListener('mousemove', this.handlers.lockedMove);
+    document.removeEventListener('pointerlockchange', this.handlers.lock);
     this.controls.dispose();
+    if (this.terrain) { this.scene.remove(this.terrain.group); this.terrain.dispose(); }
     this.clearGroup(this.scene);
     this.sharedGeometries.forEach((g) => g.dispose());
     this.sharedMaterials.forEach((m) => m.dispose());
