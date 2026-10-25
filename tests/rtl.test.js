@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { compileVerilog } from '../src/rtl/compiler.js';
 import { RTL_EXAMPLES } from '../src/rtl/examples.js';
 import { CircuitSimulator } from '../src/core/simulator.js';
+import { CircuitBuilder } from '../src/ui/builder.js';
 
 test('real synthesis preserves source hierarchy and executes every full-adder input', async () => {
   const example = RTL_EXAMPLES.find(item => item.id === 'fulladder');
@@ -44,6 +45,27 @@ test('synthesized enabled counter resets, holds, and advances on clocks', async 
   assert.equal(sim.getPort('count'), 1);
   sim.setInput('enable', 1).tick();
   assert.equal(sim.getPort('count'), 2);
+});
+
+test('exported builder control and arithmetic preserve behavior after actual RTL synthesis', async () => {
+  const builder=new CircuitBuilder({empty:true});
+  const a=builder.add('input'),b=builder.add('input');
+  const eq=builder.add('eq'),lt=builder.add('lt'),mux=builder.add('mux'),reg=builder.add('register');
+  const outputs=[];
+  for(const type of ['sub','mul','shl','shr']){
+    const operation=builder.add(type),output=builder.add('output');
+    builder.connect({from:a,to:operation,toPort:'A'});builder.connect({from:b,to:operation,toPort:'B'});
+    builder.connect({from:operation,to:output});outputs.push(output);
+  }
+  for(const id of [eq,lt,mux]){builder.connect({from:a,to:id,toPort:'A'});builder.connect({from:b,to:id,toPort:'B'});}
+  builder.connect({from:lt,to:mux,toPort:'S'});builder.connect({from:eq,to:reg,toPort:'EN'});builder.connect({from:mux,to:reg,toPort:'D'});
+  for(const source of [mux,reg]){const output=builder.add('output');builder.connect({from:source,to:output});outputs.push(output);}
+  const compiled=await compileVerilog(builder.toVerilog());
+  const direct=new CircuitSimulator(builder.getNetlist()),synthesized=new CircuitSimulator(compiled.netlist);
+  for(const [left,right] of [[7,7],[128,127],[1,2],[255,7],[128,8],[255,255]]){
+    for(const sim of [direct,synthesized])sim.setInput(a,left).setInput(b,right).tick();
+    for(const output of outputs)assert.equal(synthesized.getPort(output),direct.getPort(output),`${left}, ${right}: ${output}`);
+  }
 });
 
 test('malformed source and missing top modules return source diagnostics', async () => {
