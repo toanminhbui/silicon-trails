@@ -5,8 +5,8 @@ const INITIAL_MILESTONES = () => ({distance:0,inspectedAccumulator:false,reached
 
 const STEPS = Object.freeze([
   {
-    id:'walk',title:'Find your feet',description:'Walk a little way through the world. The computer is yours to explore.',
-    hint:'Use W A S D or the arrow keys to move. Walk at least three world units.',
+    id:'walk',title:'Take flight',description:'Fly a little way through the machine. You can explore its components from every side.',
+    hint:'Use W A S D to fly, Space to rise, and Q or C to descend. Travel at least three world units.',
     actionLabel:'Enter the world',action:'walk',
   },
   {

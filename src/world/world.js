@@ -37,6 +37,12 @@ function roundedRect(context, x, y, w, h, radius) {
   context.roundRect(x, y, w, h, radius);
 }
 
+function viewScale(value, min, max, name) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${name} must be a finite number`);
+  return THREE.MathUtils.clamp(number, min, max);
+}
+
 /** Spatial circuit view. World coordinates describe placement, never signal delay. */
 export class CircuitWorld {
   constructor(container, { onSelect, onConnect, onPlace, onPause, onMove, onTarget } = {}) {
@@ -51,6 +57,9 @@ export class CircuitWorld {
     this.visualTime = 0;
     this.renderDirty = true;
     this.tool = null;
+    this.layoutScale = 1;
+    this.componentScale = 1;
+    this.partScales = new Map();
     this.nodes = new Map();
     this.edges = new Map();
     this.pickables = [];
@@ -82,7 +91,7 @@ export class CircuitWorld {
     this.canvas = this.renderer.domElement;
     this.canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;touch-action:none;';
     this.canvas.tabIndex = 0;
-    this.canvas.setAttribute('aria-label', 'Voxel computer meadow. W A S D or arrows to walk, Shift to sprint, Space to jump. Mouse to look, E to inspect. Escape pauses.');
+    this.canvas.setAttribute('aria-label', 'Processor lab. W A S D or arrows to fly, Space up, Q or C down, Shift boost. Mouse to look, E to inspect. Escape pauses.');
     container.appendChild(this.canvas);
     const gl = this.renderer.getContext();
     const rendererInfo = gl.getExtension('WEBGL_debug_renderer_info');
@@ -96,8 +105,8 @@ export class CircuitWorld {
     this.renderer.toneMappingExposure = 1.1;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x8ec8ed);
-    this.scene.fog = new THREE.Fog(0xa9d4e4, 48, 170);
+    this.scene.background = new THREE.Color(0x070f1c);
+    this.scene.fog = new THREE.Fog(0x070f1c, 100, 400);
     this.camera = new THREE.PerspectiveCamera(72, 1, 0.08, 380);
     this.camera.position.set(28, 30, 35);
     this.controls = new OrbitControls(this.camera, this.canvas);
@@ -120,9 +129,9 @@ export class CircuitWorld {
     this.boardGroup = new THREE.Group();
     this.scene.add(this.boardGroup, this.edgeGroup, this.nodeGroup);
 
-    const ambient = new THREE.HemisphereLight(0xd9eeff, 0x7b8755, 2.0);
+    const ambient = new THREE.HemisphereLight(0xc6e4ff, 0x1a2b40, 1.9);
     this.scene.add(ambient);
-    const sun = new THREE.DirectionalLight(0xfff1cc, 2.9);
+    const sun = new THREE.DirectionalLight(0xffefdc, 2.6);
     sun.position.set(-32, 58, 24);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
@@ -131,7 +140,7 @@ export class CircuitWorld {
     sun.shadow.camera.far = 170;
     sun.shadow.normalBias = 0.045;
     this.scene.add(sun);
-    const rim = new THREE.DirectionalLight(0xb5dcff, 0.65);
+    const rim = new THREE.DirectionalLight(0x81b7ff, 1.1);
     rim.position.set(12, 16, -26);
     this.scene.add(rim);
     this.scene.add(this.camera);
@@ -159,19 +168,6 @@ export class CircuitWorld {
     this.beacon.add(this.box(0.65, 0.65, 0.65, 0, 4.9, 0, beaconMaterial));
     this.beacon.visible = false;
     this.scene.add(this.beacon);
-    this.hand = new THREE.Group();
-    const sleeve = new THREE.MeshLambertMaterial({ color: 0x4d8ba4 });
-    const skin = new THREE.MeshLambertMaterial({ color: 0xcfa580 });
-    const held = new THREE.MeshLambertMaterial({ color: 0x69bd92 });
-    this.hand.add(this.box(0.23, 0.52, 0.26, 0, -0.12, 0, sleeve));
-    this.hand.add(this.box(0.22, 0.24, 0.25, 0, 0.18, 0, skin));
-    this.hand.add(this.box(0.28, 0.28, 0.28, -0.04, 0.28, -0.09, held));
-    this.hand.children[2].visible = false;
-    this.hand.position.set(0.55, -0.49, -0.9);
-    this.hand.rotation.set(-0.18, -0.28, -0.22);
-    this.hand.visible = false;
-    this.hand.traverse((object) => { object.castShadow = false; object.receiveShadow = false; });
-    this.camera.add(this.hand);
 
     this.handlers = {
       down: (e) => this.pointerDown(e), move: (e) => this.pointerMove(e), up: (e) => this.pointerUp(e),
@@ -244,32 +240,9 @@ export class CircuitWorld {
   }
 
   createBoard() {
-    const landscapeBounds = {
-      x: 0, z: 0,
-      width: this.bounds.width + Math.abs(this.bounds.x) * 2,
-      depth: this.bounds.depth + Math.abs(this.bounds.z) * 2,
-    };
-    const requiredX = Math.max(22, landscapeBounds.width / 2 + 4);
-    const requiredZ = Math.max(24, landscapeBounds.depth / 2 + 4);
-    const requiredRadius = Math.max(84, Math.ceil(Math.max(landscapeBounds.width, landscapeBounds.depth) * 0.65 / 2) * 2 + 28);
-    // Graph edits change the monuments, not the surrounding geography. Keep
-    // expensive voxel instance buffers until a design needs a larger clearing.
-    if (this.terrain && this.terrain.clearX >= requiredX && this.terrain.clearZ >= requiredZ && this.terrain.radius >= requiredRadius) return;
-    if (this.terrain) { this.scene.remove(this.terrain.group); this.terrain.dispose(); }
-    this.clearGroup(this.boardGroup);
-    this.terrain = new VoxelTerrain(landscapeBounds);
+    if (this.terrain) return;
+    this.terrain = new VoxelTerrain();
     this.scene.add(this.terrain.group);
-    if (this.player) this.player.terrain = this.terrain;
-    const wood = new THREE.MeshLambertMaterial({ color: 0x88603f });
-    this.boardGroup.add(this.box(0.22, 2.4, 0.22, -6.8, 1.2, 21, wood));
-    this.boardGroup.add(this.box(0.22, 2.4, 0.22, -3.2, 1.2, 21, wood));
-    this.boardGroup.add(this.box(4.2, 1.25, 0.18, -5, 2.0, 21, wood));
-    const sign = this.label('SILICON TRAILS', { scale: 4.05, color: '#f6edc8' });
-    sign.position.set(-5, 2.12, 21.15);
-    this.boardGroup.add(sign);
-    const subtitle = this.label('A world made of small things.', { scale: 3.6, color: '#c4e0c1' });
-    subtitle.position.set(-5, 1.65, 21.16);
-    this.boardGroup.add(subtitle);
   }
 
   autoPositions(nodes) {
@@ -302,25 +275,87 @@ export class CircuitWorld {
     this.halo.visible = false;
     this.selectedId = null;
     const positions = this.autoPositions(nodes);
-    const box = new THREE.Box3();
     nodes.forEach((node) => {
       const position = node.position || positions.get(node.id);
       const group = this.createNode(node);
       group.position.fromArray(position);
       this.nodeGroup.add(group);
-      this.nodes.set(node.id, { node, group, ...group.userData.visual });
-      box.expandByPoint(group.position);
+      this.nodes.set(node.id, { node, group, basePosition: [...position], ...group.userData.visual });
     });
-    if (nodes.length) {
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      this.bounds = { x: center.x, z: center.z, width: Math.max(28, size.x + 14), depth: Math.max(23, size.z + 14) };
-    } else this.bounds = { x: 0, z: 0, width: 34, depth: 26 };
+    this.applySceneScale(false);
     this.createBoard();
     edges.forEach((edge, index) => this.createEdge(edge, index));
     if (!preserveCamera) this.resetCamera();
     this.setTutorialTarget(this.tutorialTargetId);
     this.setLabelVisibility(!this.panorama);
+  }
+
+  getViewSettings() {
+    return { layoutScale: this.layoutScale, componentScale: this.componentScale, partScales: Object.fromEntries(this.partScales) };
+  }
+
+  setLayoutScale(value) {
+    this.layoutScale = viewScale(value, 0.35, 3, 'Layout scale');
+    this.applySceneScale();
+    return this.layoutScale;
+  }
+
+  setComponentScale(value) {
+    this.componentScale = viewScale(value, 0.4, 3, 'Component scale');
+    this.applySceneScale();
+    return this.componentScale;
+  }
+
+  setPartScale(id, value) {
+    if (typeof id !== 'string' || !id) throw new Error('Select a component to scale');
+    const scale = viewScale(value, 0.4, 3, 'Part scale');
+    if (scale === 1) this.partScales.delete(id);
+    else this.partScales.set(id, scale);
+    this.applySceneScale();
+    return scale;
+  }
+
+  applyViewSettings(settings = {}) {
+    const layout = viewScale(settings.layoutScale ?? 1, 0.35, 3, 'Layout scale');
+    const components = viewScale(settings.componentScale ?? 1, 0.4, 3, 'Component scale');
+    const parts = new Map();
+    for (const [id, value] of Object.entries(settings.partScales || {})) {
+      parts.set(id, viewScale(value, 0.4, 3, 'Part scale'));
+    }
+    this.layoutScale = layout;
+    this.componentScale = components;
+    this.partScales = parts;
+    this.applySceneScale();
+    return this.getViewSettings();
+  }
+
+  applySceneScale(rebuildEdges = true) {
+    if (!this.renderer) return;
+    const bounds = new THREE.Box3();
+    for (const [id, item] of this.nodes) {
+      const scale = this.componentScale * (this.partScales.get(id) || 1);
+      item.group.position.fromArray(item.basePosition).multiplyScalar(this.layoutScale);
+      item.group.scale.setScalar(scale);
+      bounds.expandByPoint(item.group.position.clone().add(new THREE.Vector3(3 * scale, 3 * scale, 2.5 * scale)));
+      bounds.expandByPoint(item.group.position.clone().sub(new THREE.Vector3(3 * scale, 0, 2.5 * scale)));
+    }
+    if (this.nodes.size) {
+      const size = bounds.getSize(new THREE.Vector3()), center = bounds.getCenter(new THREE.Vector3());
+      this.bounds = { x: center.x, z: center.z, width: Math.max(28, size.x + 8), depth: Math.max(23, size.z + 8) };
+    }
+    this.nodeGroup.updateMatrixWorld(true);
+    if (rebuildEdges) {
+      this.clearGroup(this.edgeGroup);
+      this.edges.clear();
+      this.design.edges.forEach((edge, index) => this.createEdge(edge, index));
+      if (this.signalSnapshot) this.updateSignals(this.signalSnapshot);
+      this.setLabelVisibility(!this.panorama);
+    }
+    this.ghost?.scale.setScalar(this.componentScale);
+    this.select(this.selectedId);
+    this.setTutorialTarget(this.tutorialTargetId);
+    this.renderDirty = true;
+    this.refreshTarget();
   }
 
   createNode(node) {
@@ -434,7 +469,8 @@ export class CircuitWorld {
       const p = (item.node.ports || []).find((p) => p.direction === direction);
       port = p ? item.sockets.get(p.name) : null;
     }
-    return item.group.position.clone().add(port || new THREE.Vector3(direction === 'output' ? 2 : -2, 0.38, 0));
+    item.group.updateWorldMatrix(true, false);
+    return item.group.localToWorld((port || new THREE.Vector3(direction === 'output' ? 2 : -2, 0.38, 0)).clone());
   }
 
   createEdge(edge, index) {
@@ -473,6 +509,7 @@ export class CircuitWorld {
 
   updateSignals({ nodeValues = {}, edgeValues = {} } = {}) {
     if (!this.renderer || this.disposed) return;
+    this.signalSnapshot = { nodeValues, edgeValues };
     this.renderDirty = true;
     const entries = (values) => values instanceof Map ? values.entries() : Object.entries(values);
     for (const [id, raw] of entries(nodeValues)) {
@@ -504,7 +541,7 @@ export class CircuitWorld {
     if (!this.renderer) return;
     const item = this.nodes.get(id);
     this.halo.visible = !!item;
-    if (item) this.halo.position.copy(item.group.position);
+    if (item) { this.halo.position.copy(item.group.position); this.halo.scale.copy(item.group.scale); }
   }
 
   firstPerson() { return this.mode === 'walk' || this.mode === 'build'; }
@@ -523,14 +560,11 @@ export class CircuitWorld {
     if (!item || !this.player) return false;
     this.panorama = false;
     this.renderDirty = true;
+    const scale = item.group.scale.x;
     const center = item.group.position;
-    let target = [center.x, center.z + 5.5];
-    for (const [dx, dz] of [[0, 5.5], [5.5, 0], [-5.5, 0], [0, -5.5]]) {
-      if (!this.player.blocked(center.x + dx, center.z + dz)) { target = [center.x + dx, center.z + dz]; break; }
-    }
-    this.player.spawn(...target);
+    this.player.spawn(center.x, center.z + 5.5 * scale, center.y + 1.8 * scale);
     this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, this.player.eyeHeight, 0));
-    this.camera.lookAt(center.clone().add(new THREE.Vector3(0, 1.25, 0)));
+    this.camera.lookAt(center.clone().add(new THREE.Vector3(0, 1.2 * scale, 0)));
     this.camera.updateMatrixWorld(true);
     this.flight = null;
     this.callbacks.onMove?.(this.getPlayerState());
@@ -540,7 +574,7 @@ export class CircuitWorld {
   }
 
   getPlayerState() {
-    return this.player?.state() || { position: [0, 0, 23], distanceWalked: 0, grounded: true };
+    return this.player?.state() || { position: [0, 6, 23], distanceWalked: 0, grounded: false, flying: true };
   }
 
   setTutorialTarget(id) {
@@ -548,7 +582,7 @@ export class CircuitWorld {
     if (!this.beacon) return;
     const item = this.nodes.get(id);
     this.beacon.visible = !!item && !this.panorama;
-    if (item) this.beacon.position.copy(item.group.position);
+    if (item) { this.beacon.position.copy(item.group.position); this.beacon.scale.copy(item.group.scale); }
     this.renderDirty = true;
   }
 
@@ -572,7 +606,6 @@ export class CircuitWorld {
     this.press = null;
     if (!this.renderer) return;
     this.controls.enabled = !this.paused && this.mode === 'orbit';
-    this.hand.visible = !this.paused && this.firstPerson();
     if (this.paused) {
       this.ghost.visible = false;
       if (document.pointerLockElement === this.canvas) {
@@ -592,11 +625,11 @@ export class CircuitWorld {
     this.camera.fov = 72;
     this.camera.updateProjectionMatrix();
     if (reset) {
-      this.player.spawn(0, 23);
+      this.player.spawn(this.bounds.x, Math.max(23, this.bounds.z + this.bounds.depth / 2 + 6), Math.max(6, this.componentScale * 4));
       this.player.distanceWalked = 0;
     }
     this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, this.player.eyeHeight, 0));
-    if (reset) this.camera.lookAt(0, 1.4, 0);
+    if (reset) this.camera.lookAt(this.bounds.x, this.componentScale * 1.2, this.bounds.z);
     else if (this.walkQuaternion) this.camera.quaternion.copy(this.walkQuaternion);
     this.camera.updateMatrixWorld(true);
     this.canvas.style.cursor = 'crosshair';
@@ -618,8 +651,9 @@ export class CircuitWorld {
     this.controls.enabled = false;
     this.camera.fov = 62;
     this.camera.updateProjectionMatrix();
-    this.camera.position.set(Math.sin(0.28) * 24, 10.5, Math.cos(0.28) * 27);
-    this.camera.lookAt(0, 1.5, 0);
+    const distance = Math.max(27, this.bounds.width * 0.75, this.bounds.depth * 0.9);
+    this.camera.position.set(this.bounds.x + Math.sin(0.28) * distance, distance * 0.39, this.bounds.z + Math.cos(0.28) * distance);
+    this.camera.lookAt(this.bounds.x, this.componentScale * 1.5, this.bounds.z);
     this.camera.updateMatrixWorld(true);
   }
 
@@ -673,10 +707,7 @@ export class CircuitWorld {
     if (this.ghost) this.ghost.visible = false;
     if (this.connectionPreview) this.connectionPreview.visible = false;
     this.refreshPortLabels();
-    if (this.hand) {
-      this.hand.children[2].visible = !!typeOrNull;
-      this.hand.children[2].material.color.set(typeOrNull === 'register' ? PALETTE.register : typeOrNull === 'add' ? PALETTE.alu : typeOrNull === 'mux' ? PALETTE.control : PALETTE.memory);
-    }
+
   }
 
   capturePointer() {
@@ -718,13 +749,10 @@ export class CircuitWorld {
   }
 
   groundHit() {
-    if (!this.terrain) return null;
-    for (let distance = 0.4; distance <= 16; distance += 0.15) {
-      const point = this.raycaster.ray.at(distance, this.pointerWorld);
-      const height = this.terrain.heightAt(point.x, point.z);
-      if (point.y <= height + 0.03) return new THREE.Vector3(Math.round(point.x * 2) / 2, height, Math.round(point.z * 2) / 2);
-    }
-    return null;
+    const point = this.raycaster.ray.intersectPlane(this.floor, this.pointerWorld);
+    if (!point || point.distanceTo(this.camera.position) > 60) return null;
+    const layout = this.layoutScale || 1;
+    return new THREE.Vector3(Math.round(point.x / layout * 2) / 2 * layout, 0, Math.round(point.z / layout * 2) / 2 * layout);
   }
 
   pointerDown(event) {
@@ -780,7 +808,7 @@ export class CircuitWorld {
 
   visibleHits() {
     return this.raycaster.intersectObjects(this.pickables.filter((object) => object.visible && !(this.tool && object.userData.inspectionProxy)), false)
-      .filter((hit) => !this.firstPerson() || hit.distance <= 15);
+      .filter((hit) => !this.firstPerson() || hit.distance <= 60);
   }
 
   pointerUp(event) {
@@ -795,7 +823,7 @@ export class CircuitWorld {
     if (this.paused) return;
     if (this.tool && !['wire', 'connect'].includes(this.tool)) {
       const position = this.groundHit();
-      if (position && !hits.length) this.callbacks.onPlace?.({ type: this.tool, position: position.toArray() });
+      if (position && !hits.length) this.callbacks.onPlace?.({ type: this.tool, position: position.toArray().map((value) => value / this.layoutScale) });
       return;
     }
     if (!hits.length) {
@@ -858,7 +886,7 @@ export class CircuitWorld {
       if (!event.repeat) this.interactAtCenter();
       return;
     }
-    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'KeyQ', 'KeyC', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
       event.preventDefault();
       this.keys.add(event.code);
       this.flight = null;
@@ -873,15 +901,14 @@ export class CircuitWorld {
     const time = this.visualTime;
     if (this.panorama && !this.softwareRenderer) {
       const angle = time * 0.018 + 0.28;
-      this.camera.position.set(Math.sin(angle) * 24, 10.5 + Math.sin(time * 0.025) * 0.8, Math.cos(angle) * 27);
-      this.camera.lookAt(0, 1.5, 0);
+      const distance = Math.max(27, this.bounds.width * 0.75, this.bounds.depth * 0.9);
+      this.camera.position.set(this.bounds.x + Math.sin(angle) * distance, distance * 0.39, this.bounds.z + Math.cos(angle) * distance);
+      this.camera.lookAt(this.bounds.x, this.componentScale * 1.5, this.bounds.z);
     } else if (this.firstPerson() && !this.paused) {
       const moved = this.player.update(delta, this.keys, this.camera);
       if (moved) this.renderDirty = true;
       this.moveTimer += delta;
       if (moved && this.moveTimer > 0.08) { this.moveTimer = 0; this.callbacks.onMove?.(this.getPlayerState()); }
-      this.hand.position.y = -0.49 + (moved && this.player.grounded ? Math.sin(this.player.distanceWalked * 7) * 0.025 : 0);
-      this.hand.visible = true;
       this.targetTimer += delta;
       if (this.targetTimer > 0.1) {
         this.targetTimer = 0;
