@@ -17,17 +17,23 @@ Data flow determines which values reach a destination. Control flow determines w
 
 The first complete processor is an 8-bit accumulator machine, **ST-8**. Its small instruction set still supports arithmetic, loops, conditional branches, and persistent RAM updates. Separate program ROM and data RAM keep the first machine approachable. The exact instruction set and clock behavior are specified in [the simulator model](simulator.md); the executable definition is [the processor RTL](../src/rtl/examples.js).
 
-## Three connected ways to learn
+## Play first; open workbenches while paused
 
-**Explore** opens a working processor. The architecture view groups its actual synthesized cells into PC, instruction register, accumulator, flags, controller, decode/routing, and arithmetic blocks. Program ROM, RAM/cache, and the display are explicitly identified as external simulation services. Selecting an implemented block can reveal its actual cells and RTL source location.
+The title screen offers a guided journey and free exploration. Starting enters a full-screen first-person world with a crosshair, a small processor HUD, and an optional tutorial card. Detailed editors and data panels remain in the pause menu. Escape stops player movement and automatic simulation and opens the RTL workbench; manual clock/instruction steps remain available for deliberate debugging. Resume returns to the same world.
 
-**Build** makes real circuits from typed ports. The initial palette contains 8-bit inputs and outputs, a 1-bit switch, ADD, AND, OR, XOR, NOT, a multiplexer, and an enabled register. The construction’s connections generate the same cell-netlist format the simulator consumes. Unconnected inputs stay unknown. Reconnecting a destination replaces its previous connection; incompatible widths and combinational feedback are rejected. Changing construction restarts execution.
+The pause menu connects the following activities without introducing global application tabs.
 
-**RTL** gives learners another way to express hardware. Verilog passes through real Yosys synthesis and then the same circuit engine. Changing an addition to a subtraction changes both the resulting implementation and its behavior. Structural Verilog exported from Build can enter this flow. A general reverse conversion from synthesized RTL into editable Build components is outside the current MVP.
+**Explore the world:** approach and interact with a working processor. Its architecture view groups actual synthesized cells into PC, instruction register, accumulator, flags, controller, decode/routing, and arithmetic blocks. Program ROM, RAM/cache, and the display are explicitly identified as external simulation services. Inspecting an implemented block can reveal its actual cells and RTL source location.
+
+**Build sandbox:** enter from the pause menu and construct real circuits from typed ports in the world. The initial palette contains 8-bit inputs and outputs, a 1-bit switch, ADD, AND, OR, XOR, NOT, a multiplexer, and an enabled register. The construction’s connections generate the same cell-netlist format the simulator consumes. Unconnected inputs stay unknown. Reconnecting a destination replaces its previous connection; incompatible widths and combinational feedback are rejected. Changing construction restarts execution.
+
+**Processor RTL:** edit hardware in a paused workbench. Verilog passes through real Yosys synthesis and then the same circuit engine. Changing an addition to a subtraction changes both the resulting implementation and its behavior. Structural Verilog exported from Build can enter this flow. A general reverse conversion from synthesized RTL into editable Build components is outside the current MVP.
 
 ## Learning progression
 
-The current sandbox supports these activities; automatic challenge progression and scoring remain future work.
+The introductory guided journey advances through real events: walking three world units, inspecting Accumulator A, producing 12 through instructions, committing `STORE 0x40`, inspecting the saved byte, and opening RTL. Buttons request actions rather than advancing a lesson counter. Earlier valid observations remain recorded when the next milestone is reached.
+
+The wider sandbox supports the following progression; a longer challenge campaign and scoring remain future work.
 
 1. **Make a signal:** vary an input, inspect its bits, and explain a gate’s output.
 2. **Choose a value:** connect a multiplexer and use a control signal to select a source.
@@ -38,7 +44,7 @@ The current sandbox supports these activities; automatic challenge progression a
 7. **Change the machine:** edit the processor RTL, synthesize it, and run programs through the changed circuit.
 8. **Explain a stall:** run repeated reads with and without the cache. Predict which address bits choose a cache line and which reads require a refill.
 
-A later guided campaign can turn these activities into explicit challenges with supplied interfaces, test inputs, and expected observations. Reusable modules would let learners package a verified subcircuit and use it at a higher level without placing every gate again.
+A later campaign can turn the broader activities into build challenges with supplied interfaces, test inputs, and expected observations. Reusable modules would let learners package a verified subcircuit and use it at a higher level without placing every gate again.
 
 ## Make memory visible
 
@@ -65,10 +71,12 @@ Future challenge checking should use the same principle: test the player’s act
 
 ## Spatial rules
 
-The world provides orientation, discoverability, and room to arrange a construction. Orbit and walk controls offer different ways to inspect it. Block positions, wire lengths, camera movement, and animation frame rate never decide a circuit’s result or memory latency.
+The world provides orientation, discoverability, and room to arrange a construction. First-person movement, grounded navigation, interaction prompts, and tutorial beacons guide the player. Pausing disables world input and preserves the player’s position. Block positions, wire lengths, camera movement, and animation frame rate never decide a circuit’s result or memory latency.
 
-The current product is a spatial laboratory. A future campaign may add build objectives, reusable blueprints, progression, and richer programmable devices. Those additions should preserve deterministic simulation and make every successful machine explainable.
+The introductory journey establishes a play-and-inspect loop. A future campaign may add build objectives, reusable blueprints, further progression, and richer programmable devices. Those additions should preserve deterministic simulation and make every successful machine explainable.
 
 ## Persistence
 
-Local autosave and exported project JSON preserve the construction, Verilog source, compiled design, assembly program, and selected settings. Restoring starts a fresh execution of that design. Runtime RAM, cache contents, pending requests, and rewind history are not saved as a resumable machine checkpoint.
+Local autosave and exported world JSON preserve the construction, Verilog source, compiled design, assembly program, selected settings, and guided-journey progress. A validated execution checkpoint retains register/input values, the current clock, RAM, cache contents, pending transactions, input/display state, and recent execution and memory events. This keeps a resumed lesson consistent with the number the player already saved.
+
+Checkpoints must match the saved circuit and program before they can change live state. Recent logs are bounded to 1,024 entries each, and rewind history starts fresh after loading. Player position is not persisted; Continue respawns at camp. Older world files without an execution checkpoint restart the machine and reset an unfinished guided journey.

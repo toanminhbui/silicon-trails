@@ -48,6 +48,8 @@ export class CircuitWorld {
     this.lastTarget = null;
     this.targetTimer = 0;
     this.moveTimer = 0;
+    this.visualTime = 0;
+    this.renderDirty = true;
     this.tool = null;
     this.nodes = new Map();
     this.edges = new Map();
@@ -57,7 +59,7 @@ export class CircuitWorld {
     this.design = { nodes: [], edges: [] };
     this.sharedGeometries = new Set();
     this.sharedMaterials = new Set();
-    this.bounds = { x: 0, z: 0, width: 34, depth: 26 };
+    this.bounds = { x: 0, z: 0, width: 44, depth: 42 };
     this.pointer = new THREE.Vector2();
     this.raycaster = new THREE.Raycaster();
     this.floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -86,7 +88,7 @@ export class CircuitWorld {
     const rendererInfo = gl.getExtension('WEBGL_debug_renderer_info');
     const gpuName = rendererInfo ? gl.getParameter(rendererInfo.UNMASKED_RENDERER_WEBGL) : '';
     this.softwareRenderer = /swiftshader|llvmpipe|software|lavapipe/i.test(gpuName);
-    this.renderer.setPixelRatio(this.softwareRenderer ? 0.85 : Math.min(window.devicePixelRatio || 1, 1.75));
+    this.renderer.setPixelRatio(this.softwareRenderer ? 0.55 : Math.min(window.devicePixelRatio || 1, 1.75));
     this.renderer.shadowMap.enabled = !this.softwareRenderer;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -106,6 +108,8 @@ export class CircuitWorld {
     this.controls.minDistance = 5;
     this.controls.maxDistance = 180;
     this.controls.target.set(0, 0, 0);
+    this.controlChange = () => { this.renderDirty = true; };
+    this.controls.addEventListener('change', this.controlChange);
 
     this.boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     this.sharedGeometries.add(this.boxGeometry);
@@ -240,9 +244,20 @@ export class CircuitWorld {
   }
 
   createBoard() {
+    const landscapeBounds = {
+      x: 0, z: 0,
+      width: this.bounds.width + Math.abs(this.bounds.x) * 2,
+      depth: this.bounds.depth + Math.abs(this.bounds.z) * 2,
+    };
+    const requiredX = Math.max(22, landscapeBounds.width / 2 + 4);
+    const requiredZ = Math.max(24, landscapeBounds.depth / 2 + 4);
+    const requiredRadius = Math.max(84, Math.ceil(Math.max(landscapeBounds.width, landscapeBounds.depth) * 0.65 / 2) * 2 + 28);
+    // Graph edits change the monuments, not the surrounding geography. Keep
+    // expensive voxel instance buffers until a design needs a larger clearing.
+    if (this.terrain && this.terrain.clearX >= requiredX && this.terrain.clearZ >= requiredZ && this.terrain.radius >= requiredRadius) return;
     if (this.terrain) { this.scene.remove(this.terrain.group); this.terrain.dispose(); }
     this.clearGroup(this.boardGroup);
-    this.terrain = new VoxelTerrain(this.bounds);
+    this.terrain = new VoxelTerrain(landscapeBounds);
     this.scene.add(this.terrain.group);
     if (this.player) this.player.terrain = this.terrain;
     const wood = new THREE.MeshLambertMaterial({ color: 0x88603f });
@@ -275,6 +290,7 @@ export class CircuitWorld {
     if (this.disposed) return;
     const preserveCamera = this.mode !== 'orbit' || nodes.some((node) => this.nodes.has(node.id));
     this.design = { nodes, edges };
+    this.renderDirty = true;
     if (!this.renderer) { this.resize(); return; }
     this.clearGroup(this.nodeGroup);
     this.clearGroup(this.edgeGroup);
@@ -304,6 +320,7 @@ export class CircuitWorld {
     edges.forEach((edge, index) => this.createEdge(edge, index));
     if (!preserveCamera) this.resetCamera();
     this.setTutorialTarget(this.tutorialTargetId);
+    this.setLabelVisibility(!this.panorama);
   }
 
   createNode(node) {
@@ -399,7 +416,7 @@ export class CircuitWorld {
       if (child.isMesh && !child.userData.nodeId) child.userData = { nodeId: node.id };
       if (child.isMesh && !this.pickables.includes(child)) this.pickables.push(child);
     });
-    group.userData.visual = { accent, led, sockets, portLabels, valueLabel: value, lastValue: undefined, kind };
+    group.userData.visual = { accent, led, sockets, portLabels, titleLabel: title, valueLabel: value, lastValue: undefined, kind };
     return group;
   }
 
@@ -448,6 +465,7 @@ export class CircuitWorld {
 
   updateSignals({ nodeValues = {}, edgeValues = {} } = {}) {
     if (!this.renderer || this.disposed) return;
+    this.renderDirty = true;
     const entries = (values) => values instanceof Map ? values.entries() : Object.entries(values);
     for (const [id, raw] of entries(nodeValues)) {
       const item = this.nodes.get(id);
@@ -473,6 +491,7 @@ export class CircuitWorld {
   }
 
   select(id) {
+    this.renderDirty = true;
     this.selectedId = id;
     if (!this.renderer) return;
     const item = this.nodes.get(id);
@@ -495,6 +514,7 @@ export class CircuitWorld {
     const item = this.nodes.get(id);
     if (!item || !this.player) return false;
     this.panorama = false;
+    this.renderDirty = true;
     const center = item.group.position;
     let target = [center.x, center.z + 5.5];
     for (const [dx, dz] of [[0, 5.5], [5.5, 0], [-5.5, 0], [0, -5.5]]) {
@@ -519,8 +539,9 @@ export class CircuitWorld {
     this.tutorialTargetId = id || null;
     if (!this.beacon) return;
     const item = this.nodes.get(id);
-    this.beacon.visible = !!item;
+    this.beacon.visible = !!item && !this.panorama;
     if (item) this.beacon.position.copy(item.group.position);
+    this.renderDirty = true;
   }
 
   resetCamera() {
@@ -538,6 +559,7 @@ export class CircuitWorld {
 
   setPaused(paused) {
     this.paused = !!paused;
+    this.renderDirty = true;
     this.keys.clear();
     this.press = null;
     if (!this.renderer) return;
@@ -571,6 +593,8 @@ export class CircuitWorld {
     this.camera.updateMatrixWorld(true);
     this.canvas.style.cursor = 'crosshair';
     this.refreshPortLabels();
+    this.setLabelVisibility(true);
+    this.setTutorialTarget(this.tutorialTargetId);
     if (lock && (!navigator.userActivation || navigator.userActivation.isActive)) this.capturePointer();
     this.callbacks.onMove?.(this.getPlayerState());
     this.lastTarget = null;
@@ -581,9 +605,14 @@ export class CircuitWorld {
     this.panorama = true;
     this.setPaused(true);
     if (!this.renderer) return;
+    this.setLabelVisibility(false);
+    this.beacon.visible = false;
     this.controls.enabled = false;
     this.camera.fov = 62;
     this.camera.updateProjectionMatrix();
+    this.camera.position.set(Math.sin(0.28) * 24, 10.5, Math.cos(0.28) * 27);
+    this.camera.lookAt(0, 1.5, 0);
+    this.camera.updateMatrixWorld(true);
   }
 
   setMode(mode) {
@@ -591,6 +620,7 @@ export class CircuitWorld {
     if (mode === 'orbit' && this.firstPerson()) this.walkQuaternion = this.camera.quaternion.clone();
     this.mode = mode;
     this.panorama = false;
+    this.setLabelVisibility(true);
     this.keys.clear();
     if (!this.renderer) return;
     this.controls.enabled = mode === 'orbit' && !this.paused;
@@ -614,11 +644,23 @@ export class CircuitWorld {
   }
 
   refreshPortLabels() {
-    for (const item of this.nodes.values()) item.portLabels.forEach((label) => { label.visible = !!this.tool; });
+    for (const item of this.nodes.values()) item.portLabels.forEach((label) => { label.visible = !!this.tool && !this.panorama; });
+  }
+
+  setLabelVisibility(visible) {
+    for (const item of this.nodes.values()) {
+      if (item.titleLabel) item.titleLabel.visible = visible;
+      item.valueLabel.visible = visible;
+      item.portLabels.forEach((label) => { label.visible = visible && !!this.tool; });
+    }
+    for (const item of this.edges.values()) if (item.label) item.label.visible = visible;
+    this.boardGroup?.traverse((object) => { if (object.isSprite) object.visible = visible; });
+    this.renderDirty = true;
   }
 
   setTool(typeOrNull) {
     this.tool = typeOrNull;
+    this.renderDirty = true;
     this.connectionStart = null;
     if (this.ghost) this.ghost.visible = false;
     if (this.connectionPreview) this.connectionPreview.visible = false;
@@ -650,6 +692,7 @@ export class CircuitWorld {
 
   look(dx, dy) {
     if (this.paused || !this.firstPerson()) return;
+    if (dx || dy) this.renderDirty = true;
     const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
     euler.y -= dx * 0.0024;
     euler.x = Math.max(-1.46, Math.min(1.46, euler.x - dy * 0.0024));
@@ -702,8 +745,14 @@ export class CircuitWorld {
     if (!this.tool || this.paused) { this.ghost.visible = false; return; }
     if (!['wire', 'connect'].includes(this.tool)) {
       const point = this.groundHit();
+      const wasVisible = this.ghost.visible;
       this.ghost.visible = !!point;
-      if (point) this.ghost.position.copy(point).add(new THREE.Vector3(0, 0.2, 0));
+      if (point) {
+        point.y += 0.2;
+        if (this.ghost.position.distanceToSquared(point) > 0.0001) this.renderDirty = true;
+        this.ghost.position.copy(point);
+      }
+      if (wasVisible !== this.ghost.visible) this.renderDirty = true;
     }
     if (this.connectionStart) {
       const point = this.groundHit() || this.raycaster.ray.at(8, new THREE.Vector3());
@@ -711,6 +760,7 @@ export class CircuitWorld {
       if (source) {
         const start = this.portPosition(source, this.connectionStart.fromPort, 'output');
         const positions = this.connectionPreview.geometry.attributes.position;
+        if (!this.connectionPreview.visible || Math.abs(positions.getX(1) - point.x) > 0.01 || Math.abs(positions.getY(1) - point.y - 0.35) > 0.01 || Math.abs(positions.getZ(1) - point.z) > 0.01) this.renderDirty = true;
         positions.setXYZ(0, start.x, start.y + 0.12, start.z);
         positions.setXYZ(1, point.x, point.y + 0.35, point.z);
         positions.needsUpdate = true;
@@ -810,13 +860,16 @@ export class CircuitWorld {
   animate() {
     if (this.disposed) return;
     const delta = Math.min(this.clock.getDelta(), 0.04);
-    const time = this.clock.elapsedTime;
-    if (this.panorama) {
+    const renderTime = this.clock.elapsedTime;
+    if (!this.paused || this.panorama) this.visualTime += delta;
+    const time = this.visualTime;
+    if (this.panorama && !this.softwareRenderer) {
       const angle = time * 0.018 + 0.28;
       this.camera.position.set(Math.sin(angle) * 24, 10.5 + Math.sin(time * 0.025) * 0.8, Math.cos(angle) * 27);
       this.camera.lookAt(0, 1.5, 0);
     } else if (this.firstPerson() && !this.paused) {
       const moved = this.player.update(delta, this.keys, this.camera);
+      if (moved) this.renderDirty = true;
       this.moveTimer += delta;
       if (moved && this.moveTimer > 0.08) { this.moveTimer = 0; this.callbacks.onMove?.(this.getPlayerState()); }
       this.hand.position.y = -0.49 + (moved && this.player.grounded ? Math.sin(this.player.distanceWalked * 7) * 0.025 : 0);
@@ -828,7 +881,7 @@ export class CircuitWorld {
         if (document.pointerLockElement === this.canvas) this.updateBuildingPreview();
       }
     }
-    if (this.flight && !this.firstPerson()) {
+    if (this.flight && !this.firstPerson() && !this.paused) {
       const factor = 1 - Math.exp(-delta * 7);
       this.camera.position.lerp(this.flight.position, factor);
       this.controls.target.lerp(this.flight.target, factor);
@@ -842,15 +895,23 @@ export class CircuitWorld {
       this.beacon.children[2].position.y = 4.9 + Math.sin(time * 2.3) * 0.2;
     }
     if (this.terrain.cloudMesh) this.terrain.cloudMesh.position.x = Math.sin(time * 0.012) * 3;
-    if (time - (this.lastRenderTime || -1) > 1 / (this.softwareRenderer ? 12 : 45)) {
+    const shouldRender = this.softwareRenderer
+      ? this.renderDirty && performance.now() >= (this.nextSoftwareRenderAt || 0)
+      : (!this.paused || this.panorama || this.renderDirty) && renderTime - (this.lastRenderTime || -1) > 1 / 45;
+    if (shouldRender) {
       this.renderer.render(this.scene, this.camera);
-      this.lastRenderTime = time;
+      this.lastRenderTime = renderTime;
+      this.renderDirty = false;
+      // A software WebGL draw can itself be slow. Start the idle interval only
+      // after it returns so pointer/keyboard events always get a turn to run.
+      if (this.softwareRenderer) this.nextSoftwareRenderAt = performance.now() + 250;
     }
     this.frame = requestAnimationFrame(this.animate);
   }
 
   resize() {
     if (this.disposed) return;
+    this.renderDirty = true;
     const width = Math.max(1, this.container.clientWidth);
     const height = Math.max(1, this.container.clientHeight);
     if (this.fallback) {
@@ -905,6 +966,7 @@ export class CircuitWorld {
     window.removeEventListener('blur', this.handlers.blur);
     document.removeEventListener('mousemove', this.handlers.lockedMove);
     document.removeEventListener('pointerlockchange', this.handlers.lock);
+    this.controls.removeEventListener('change', this.controlChange);
     this.controls.dispose();
     if (this.terrain) { this.scene.remove(this.terrain.group); this.terrain.dispose(); }
     this.clearGroup(this.scene);

@@ -80,7 +80,9 @@ ROM is asynchronous and has no request/response latency in this version. A branc
 
 `retired` is a combinational event sampled before the clock edge. The trace records the post-edge architectural result and the captured instruction address. Simple instructions retire on their EXEC edge. Memory instructions retire on response acknowledgement. HALT retires once, then stops. Invalid instructions fault without a normal retirement.
 
-**Step Clock** advances one shared edge. **Instruction** advances until one instruction retires, including its waits, or reports that its clock limit was exceeded. Rewind restores the previous clock snapshot, including registers, RAM, cache, pending transactions, and trace/event lengths. The CPU wrapper retains up to 4,096 clock snapshots.
+**Step clock** advances one shared edge. **Step instruction** advances until one instruction retires, including its waits, or reports that its clock limit was exceeded. Rewind restores the previous clock snapshot, including registers, RAM, cache, pending transactions, and trace/event lengths. The CPU wrapper retains up to 4,096 clock snapshots.
+
+Pausing the game freezes player movement and automatic processor ticking. The paused workbench still permits explicit clock/instruction steps and rewind. This separates the player’s navigation state from the machine state being inspected; opening a workbench does not reset the circuit.
 
 ## Data-memory protocol
 
@@ -124,6 +126,8 @@ Memory settings restart the program. Cache contents and timing can change while 
 
 ## Saved projects and verification
 
-Project JSON preserves construction, source, compiled design, program, and selected configuration. Restore creates fresh execution state. It does not restore RAM, cache contents, pending work, or rewind history from the saved session.
+World JSON preserves construction, source, compiled design, program, selected configuration, and guided-journey progress. New saves also include a validated execution checkpoint: simulator inputs/registers/clock, RAM, cache lines and counters, pending memory work, display/input bytes, and the most recent 1,024 memory events and instruction trace rows. Rewind history is not persisted.
+
+The checkpoint is checked against the circuit identity and program before live state changes. Invalid checkpoint data is rejected. Older saves without a checkpoint restart execution; unfinished guided progress is reset so its next lesson does not refer to a missing saved byte.
 
 [Core tests](../tests/core.test.js) check arithmetic, unknowns, simultaneous state changes, resets, and rejection rules. [CPU tests](../tests/cpu.test.js) compare every retired instruction with an independent model across cache and latency configurations, then check exact store completion, reset cancellation, and rewind/replay. [RTL tests](../tests/rtl.test.js) run real synthesis and verify behavior and diagnostics. [Builder tests](../tests/builder.test.js) check that actual connections determine circuit behavior and exported RTL.
