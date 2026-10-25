@@ -10,7 +10,7 @@ const netlist = fixture.netlist || fixture;
 // Independent architectural oracle, used only to check the synthesized circuit.
 function reference(words,input = 0) {
   const ram = new Uint8Array(256), trace = [];
-  let a = 0,pc = 0,z = 0,c = 0,display = 0;
+  let a = 0,pc = 0,z = 1,c = 0,display = 0;
   for (let count = 0; count < 2000; count++) {
     const instructionPc = pc,word = words[pc] ?? 0xFF00,op = word >>> 8,arg = word & 255;
     pc = (pc + 1) & 255;
@@ -120,4 +120,14 @@ test('full reset cancels an accepted transaction and restores the initial image'
   assert.equal(lab.events.length,0);
   assert.equal(lab.ram[0x40],0);
   compare(run(lab),reference(assemble('LDI 9\nSTORE 0x40\nHALT').words));
+});
+
+
+test('reset zero flag controls a branch before the first accumulator write',() => {
+  const source = 'JZ zero\nLDI 99\nJMP end\nzero: LDI 7\nend: HALT';
+  const lab = new CpuLab(netlist);
+  assert.equal(lab.getState().z,1);
+  lab.loadProgram(source);
+  compare(run(lab),reference(assemble(source).words));
+  assert.equal(lab.getState().a,7);
 });

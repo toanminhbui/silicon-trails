@@ -23,7 +23,3 @@ Instruction fetch latches IR and advances PC in FETCH phase. No program-memory h
 ## Spatial renderer
 
 `src/world/world.js` exports `CircuitWorld`, constructor `(container, {onSelect, onConnect, onPlace}={})`. Methods `setDesign({nodes,edges})`, `updateSignals({nodeValues,edgeValues})`, `select(id)`, `focus(id)`, `resetCamera()`, `setMode("orbit"|"walk"|"build")`, `setTool(typeOrNull)`, `dispose()`. Each node `{id,label,type,kind,width,position?:[x,y,z],ports?:[{name,direction,width}],source?,scope?}`. Each edge `{id,from,to,fromPort?,toPort?,label?,width?}`. Values maps id → number/null or `{value,active}`. Callbacks selection `(id)`; connection `({from,fromPort,to,toPort})`; placement `({type,position})`. Renderer includes responsive sizing, raycast selection, orbit exploration, optional keyboard walk, voxel visual aesthetic and signal labels. Node positions optional: auto-layout when absent. No DOM UI outside canvas container.
-
-## Ownership
-
-Root owns app UI, project scaffold, docs, Git operations and deployment. Core agent owns src/core + core tests. RTL agent owns src/rtl + example fixtures + scripts/generate-examples + compiler tests. World agent owns src/world only. Agents do not edit dependency manifests or commit: root integrates and commits in stages.

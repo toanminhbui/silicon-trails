@@ -172,7 +172,8 @@ function buildScene() {
     if(state.scope?.length){
       const chosen=new Set(state.scope);
       const visible=new Set(graph.nodes.filter(n=>chosen.has(n.cellId||n.id)).map(n=>n.id));
-      for(const edge of graph.edges)if(visible.has(edge.from)||visible.has(edge.to)){visible.add(edge.from);visible.add(edge.to);}
+      const anchors=new Set(visible);
+      for(const edge of graph.edges)if(anchors.has(edge.from)||anchors.has(edge.to)){visible.add(edge.from);visible.add(edge.to);}
       graph={...graph,nodes:graph.nodes.filter(n=>visible.has(n.id)),edges:graph.edges.filter(e=>visible.has(e.from)&&visible.has(e.to))};
     }
   }
@@ -304,14 +305,19 @@ function renderPanel(){
   panel.innerHTML=rows.length?`<table class="trace-table"><colgroup><col style="width:13%"><col style="width:12%"><col style="width:29%"><col style="width:15%"><col style="width:31%"></colgroup><thead><tr><th>CLOCK</th><th>PC</th><th>INSTRUCTION</th><th>A</th><th>MEMORY / EFFECT</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${String(row.cycle).padStart(4,'0')}</td><td>0x${hex(row.pc)}</td><td class="instruction">${esc(row.instruction)}</td><td>${row.a??'X'}</td><td class="${row.memory?'changed':''}">${row.memory?`${row.memory.type.toUpperCase()} [${hex(row.memory.address)}] ${row.memory.type==='write'?'←':'→'} ${row.memory.value}`:row.instruction==='HALT'?'Program complete':`PC → ${hex(row.nextPc)}`}</td></tr>`).join('')}</tbody></table>`:`<div class="trace-empty">${icon('code',25)}<div><strong>Your first instruction is waiting.</strong>Press Instruction to follow one operation, or Run to start the clock.</div></div>`;
 }
 function renderMemory(panel){
-  const lab=state.lab,selected=state.memoryAddress,last=lab.events.filter(e=>e.type==='write'&&e.address===selected).at(-1),reads=lab.events.filter(e=>e.type==='read'&&e.address===selected).length;
-  const written=new Set(lab.events.filter(e=>e.type==='write').map(e=>e.address));
+  const lab=state.lab,selected=state.memoryAddress,last=lab.events.filter(e=>e.type==='write'&&!e.ignored&&e.address===selected).at(-1),reads=lab.events.filter(e=>e.type==='read'&&e.address===selected).length;
+  const written=new Set(lab.events.filter(e=>e.type==='write'&&!e.ignored).map(e=>e.address));
+  const writes=lab.events.filter(e=>e.type==='write'&&!e.ignored&&e.address===selected);
+  const origin=last?lab.trace.find(row=>row.memory?.id===last.id):null;
+  const previous=writes.length>1?writes.at(-2).value:0;
+  const memoryValue=address=>address===0xFF?(lab.input&255):address===0xFE?lab.display:lab.ram[address];
+  const selectedValue=memoryValue(selected);
   let grid='<span></span>'+Array.from({length:16},(_,i)=>`<span class="memory-col">${hex(i,1)}</span>`).join('');
   for(let row=0;row<16;row++){
     grid+=`<span class="memory-row-label">${hex(row*16)}</span>`;
-    for(let col=0;col<16;col++){const address=row*16+col;grid+=`<button class="memory-cell ${written.has(address)?'changed':''} ${address===selected?'selected':''}" data-address="${address}" title="Address 0x${hex(address)} · ${lab.ram[address]}" aria-label="Memory address 0x${hex(address)}, value ${lab.ram[address]}">${hex(lab.ram[address])}</button>`;}
+    for(let col=0;col<16;col++){const address=row*16+col;grid+=`<button class="memory-cell ${written.has(address)?'changed':''} ${address===selected?'selected':''}" data-address="${address}" title="Address 0x${hex(address)} · ${memoryValue(address)}" aria-label="Memory address 0x${hex(address)}, value ${memoryValue(address)}">${hex(memoryValue(address))}</button>`;}
   }
-  panel.innerHTML=`<div class="memory-wrap"><div class="memory-grid">${grid}</div><div class="memory-detail"><span class="eyebrow">ADDRESS 0x${hex(selected)}</span><strong>${lab.ram[selected]} <span class="muted" style="font-size:10px">/ 0x${hex(lab.ram[selected])}</span></strong><code>${lab.ram[selected].toString(2).padStart(8,'0')}</code><p>${selected===0xFE?'Numeric output device. Writes update the display.':selected===0xFF?'Input device. Reads return the configured input byte.':last?`Written at clock ${last.cycle}.<br>Previous writes: ${lab.events.filter(e=>e.type==='write'&&e.address===selected).length-1}.`:'Initial zero value. No committed writes yet.'}</p><span>${reads} completed read${reads===1?'':'s'} · values persist until overwritten or reset.</span><button class="btn small" data-action="watch-memory" style="margin-top:12px">${icon('target',12)} ${state.watchAddress===selected?'Watching writes':'Watch writes here'}</button></div></div>`;
+  panel.innerHTML=`<div class="memory-wrap"><div class="memory-grid">${grid}</div><div class="memory-detail"><span class="eyebrow">ADDRESS 0x${hex(selected)}</span><strong>${selectedValue} <span class="muted" style="font-size:10px">/ 0x${hex(selectedValue)}</span></strong><code>${selectedValue.toString(2).padStart(8,'0')}</code><p>${selected===0xFE?'Numeric output device. Writes update the display.':selected===0xFF?'Input device. Reads return the configured input byte.':last?`Saved by STORE${origin?` at PC 0x${hex(origin.pc)}`:''}.<br>Clock ${last.cycle} · source A.<br>Previous value: ${previous}.<br>${writes.length} committed write${writes.length===1?'':'s'}.`:'Initial zero value. No committed writes yet.'}</p><span>${reads} completed read${reads===1?'':'s'} · values persist until overwritten or reset.</span><button class="btn small" data-action="watch-memory" style="margin-top:12px">${icon('target',12)} ${state.watchAddress===selected?'Watching writes':'Watch writes here'}</button></div></div>`;
 }
 function renderCache(panel){
   const lab=state.lab,s=lab.cacheStats;

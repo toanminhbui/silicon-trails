@@ -239,7 +239,7 @@ export class CircuitWorld {
     // A quiet surrounding floor keeps the island legible while walking.
     this.boardGroup.add(this.box(500, 0.3, 500, x, -2.55, z,
       new THREE.MeshStandardMaterial({ color: 0x0a1420, roughness: 1 })));
-    const stamp = this.label('SILICON TRAILS  /  LOGIC WORKSHOP', { scale: Math.min(width * 0.5, 13), color: '#83a1a9' });
+    const stamp = this.label('SILICON TRAILS', { scale: Math.min(width * 0.25, 6), color: '#83a1a9' });
     stamp.position.set(x, 0.05, front - 1.0);
     stamp.material.opacity = 0.65;
     this.boardGroup.add(stamp);

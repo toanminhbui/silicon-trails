@@ -4,6 +4,8 @@ A Minecraft-inspired computer architecture workshop in the browser. Build connec
 
 [Source repository](https://github.com/toanminhbui/silicon-trails)
 
+![Silicon Trails processor workshop with a 3D circuit and live register inspector](docs/images/workshop.png)
+
 ## What works
 
 - **Explore:** a spatial overview of the ST-8 accumulator processor, live signals, component inspection, and links from overview blocks to their implementing cells. Orbit the board or use walk mode.
@@ -36,6 +38,7 @@ For browser checks:
 
 ```sh
 npx playwright install chromium
+npm run build
 npm run test:e2e
 ```
 
