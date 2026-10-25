@@ -169,6 +169,9 @@ test('the building sandbox edits inputs, wires real ports, and places a componen
   await expect(page.locator('#game-hud')).toBeVisible();
   expect(await page.evaluate(() => window.siliconTrails.getGameState().mode)).toBe('build');
   await pause(page);
+  await expect(page.locator('#rtl-station .cm-content')).toContainText('inputA');
+  await expect(page.locator('#rtl-station .cm-content')).toContainText('register1');
+  await expect(page.locator('#rtl-station .cm-content')).not.toContainText('module alu8');
   await page.getByRole('button', { name:'Execution trace', exact:true }).click();
   await page.getByRole('button', { name:'Step clock', exact:true }).click();
   expect(await page.evaluate(() => window.siliconTrails.getSimulator().getPort('output1'))).toBe(12);
@@ -193,18 +196,16 @@ test('the building sandbox edits inputs, wires real ports, and places a componen
   await page.getByRole('button', { name:'Execution trace', exact:true }).click();
   await page.getByRole('button', { name:'Step clock', exact:true }).click();
   expect(await page.evaluate(() => window.siliconTrails.getSimulator().getPort('output1'))).toBeNull();
-  await page.getByRole('button', { name:'Processor RTL', exact:true }).click();
-  await page.locator('#rtl-io [data-input="inputA"]').fill('7');
-  await page.locator('#rtl-io [data-input="inputA"]').press('Tab');
   await page.getByRole('button', { name:/^Resume world/ }).click();
   await page.locator('#hotbar [data-tool="wire"]').click();
-  for (const id of ['inputA','output1']) {
+  // Input A remains unknown. Route the known input B around the register.
+  for (const id of ['inputB','output1']) {
     await page.evaluate(id => window.siliconTrails.getWorld().teleportToNode(id), id);
     await page.waitForFunction(id => window.siliconTrails.getWorld().lastTarget?.id === id, id);
     await page.keyboard.press('e');
   }
-  expect(await page.evaluate(() => window.siliconTrails.getBuilder().edges.find(edge => edge.to === 'output1').from)).toBe('inputA');
-  expect(await page.evaluate(() => window.siliconTrails.getSimulator().getPort('output1'))).toBe(7);
+  expect(await page.evaluate(() => window.siliconTrails.getBuilder().edges.find(edge => edge.to === 'output1').from)).toBe('inputB');
+  expect(await page.evaluate(() => window.siliconTrails.getSimulator().getPort('output1'))).toBe(5);
   const before = await page.evaluate(() => [...window.siliconTrails.getBuilder().nodes.values()].filter(node => node.type === 'not').length);
   await page.locator('#hotbar [data-tool="not"]').click();
   await page.evaluate(() => {

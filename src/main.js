@@ -24,7 +24,7 @@ const state={
   cache:false,latency:3,breakpoint:null,watchAddress:null,tool:null,
   programSource:PROGRAMS[0].source,programName:PROGRAMS[0].name,
   genericHistory:[],genericTrace:[],dirty:false,compiling:false,guided:false,
-  target:null,eventCursor:0,ignoreEscapeUntil:0,
+  target:null,eventCursor:0,ignoreEscapeUntil:0,builderSource:null,builderSignature:null,
 };
 let world,editor,EditorViewClass,editorPromise,suppressEditor=false,toastTimer,saveTimer;
 let lastFrame=0,clockBudget=0,lastHud=0,lastGuideKey='',lastPlayerSave=0,lastExecutionSave=0;
@@ -112,7 +112,7 @@ async function ensureEditor(){
     const [{EditorView,basicSetup},{StreamLanguage},{verilog},{oneDark}]=await Promise.all([import('codemirror'),import('@codemirror/language'),import('@codemirror/legacy-modes/mode/verilog'),import('@codemirror/theme-one-dark')]);
     EditorViewClass=EditorView;$('#code-editor').innerHTML='';
     editor=new EditorView({doc:state.source,extensions:[basicSetup,StreamLanguage.define(verilog),oneDark,EditorView.lineWrapping,EditorView.updateListener.of(update=>{
-      if(update.docChanged&&!suppressEditor){state.source=editor.state.doc.toString();state.dirty=state.source!==state.compiled?.source;$('#editor-dot').textContent=state.dirty?'●':'';if(state.dirty)compileStatus('Hardware changed · synthesize to rebuild the world.');scheduleSave();}
+      if(update.docChanged&&!suppressEditor){state.source=editor.state.doc.toString();if(state.mode==='build'){state.builderSource=state.source;state.builderSignature=state.builder.toVerilog();}state.dirty=state.source!==state.compiled?.source;$('#editor-dot').textContent=state.dirty?'●':'';if(state.dirty)compileStatus('Hardware changed · synthesize to rebuild the world.');scheduleSave();}
     })],parent:$('#code-editor')});return editor;
   })().catch(error=>{editorPromise=null;$('#code-editor').textContent=error.message;throw error;});return editorPromise;
 }
@@ -194,7 +194,9 @@ function showWorkbench(station='rtl'){
   const titles={rtl:['BEHIND THE BLOCKS','Your processor, in Verilog.'],memory:['WHERE A NUMBER STAYS','The memory bank.'],trace:['ONE INSTRUCTION AT A TIME','Follow the execution.'],cache:['MAKE THE WAIT VISIBLE','A little closer to the processor.'],inspect:['A CLOSER LOOK','What does this block do?'],guide:['YOUR FIELD NOTES','A small guide to a big idea.']};
   const [kicker,title]=titles[station]||titles.rtl;$('#bench-kicker').textContent=kicker;$('#bench-title').textContent=title;
   document.querySelectorAll('[data-station]').forEach(el=>{if(el.tagName==='BUTTON')el.classList.toggle('active',el.dataset.station===station);});
-  if(station==='rtl'){renderRtlIO();ensureEditor().then(()=>editor.requestMeasure()).catch(e=>toast(e.message,true));tutorial.observe({type:'open-rtl'});}
+  if(station==='rtl'){
+    if(state.mode==='build'){const generated=state.builder.toVerilog();if(state.builderSignature!==generated||state.builderSource===null){state.builderSignature=generated;state.builderSource=generated;}if(source()!==state.builderSource)setSource(state.builderSource);$('#rtl-example').value='custom';$('#editor-filename').textContent='my-blocks.v';compileStatus('Verilog generated from your blocks. Edit and synthesize to explore a new RTL circuit.');}
+    renderRtlIO();ensureEditor().then(()=>editor.requestMeasure()).catch(e=>toast(e.message,true));tutorial.observe({type:'open-rtl'});}
   if(['memory','trace','cache'].includes(station)){state.panel=station;renderPanel();if(station==='memory')observeMemory();}
   if(station==='inspect')renderInspector();if(station==='guide')renderGuide();renderPauseGuide();
 }
@@ -365,7 +367,7 @@ async function validateCpu(){
   for(const program of PROGRAMS){try{const lab=new CpuLab(state.compiled.netlist,{latency:state.latency,cache:state.cache});lab.input=42;lab.loadProgram(program.source);for(let i=0;i<1200&&!lab.halted;i++)lab.stepInstruction();if(!lab.halted||lab.getState().fault||lab.display!==expected[program.id])throw new Error(`Expected ${expected[program.id]}, got ${lab.display}`);results.push(`<p class="test-pass">${icon('check',14)} ${esc(program.name)} · display ${lab.display} · ${lab.cycle} clocks</p>`);}catch(error){results.push(`<p class="test-fail">${esc(program.name)} · ${esc(error.message)}</p>`);}}
   const el=$('#validation-results');if(el)el.innerHTML=results.join('')+'<p>Your current execution was preserved.</p>';
 }
-function projectData(){return{format:'silicon-trails',version:1,name:'Logic Meadow',mode:state.mode,view:state.view,exampleId:state.exampleId,source:source(),compiled:state.compiled,program:state.programSource,programName:state.programName,builder:state.builder.toJSON(),config:{cache:state.cache,latency:state.latency,breakpoint:state.breakpoint,watchAddress:state.watchAddress},game:{started:state.hasSave,guided:state.guided,tutorial:tutorial.snapshot(),execution:captureExecution({lab:state.lab,sim:state.sim})}};}
+function projectData(){return{format:'silicon-trails',version:1,name:'Logic Meadow',mode:state.mode,view:state.view,exampleId:state.exampleId,source:source(),compiled:state.compiled,program:state.programSource,programName:state.programName,builder:state.builder.toJSON(),config:{cache:state.cache,latency:state.latency,breakpoint:state.breakpoint,watchAddress:state.watchAddress},game:{started:state.hasSave,guided:state.guided,tutorial:tutorial.snapshot(),builderNotebook:{signature:state.builderSignature,text:state.builderSource},execution:captureExecution({lab:state.lab,sim:state.sim})}};}
 function saveNow(){if(!state.ready||!state.hasSave)return;try{localStorage.setItem(STORAGE,JSON.stringify(projectData()));$('#save-label').textContent='WORLD SAVED';}catch{$('#save-label').textContent='SAVE WORLD TO KEEP A COPY';}}
 function scheduleSave(){clearTimeout(saveTimer);if(!state.hasSave)return;$('#save-label').textContent='SAVING…';saveTimer=setTimeout(saveNow,500);}
 function downloadProject(){
@@ -378,7 +380,7 @@ function restoreProject(data){
   stop();state.builder=builder;state.cache=!!data.config?.cache;state.latency=Math.max(1,Math.min(100,Number(data.config?.latency)||3));state.breakpoint=Number.isInteger(data.config?.breakpoint)?data.config.breakpoint:null;state.watchAddress=Number.isInteger(data.config?.watchAddress)?data.config.watchAddress:null;
   state.programSource=data.program;state.programName=data.programName||'My program';useCompiled(data.compiled,{exampleId:data.exampleId||'cpu'});setSource(data.source);
   if(data.mode==='build'){state.mode='build';rebuildBuilder();}else if(data.view==='cells'){state.view='cells';buildScene();}
-  state.guided=!!data.game?.guided;
+  state.guided=!!data.game?.guided;state.builderSource=typeof data.game?.builderNotebook?.text==='string'?data.game.builderNotebook.text:null;state.builderSignature=typeof data.game?.builderNotebook?.signature==='string'?data.game.builderNotebook.signature:null;
   let restored=false;try{restored=restoreExecution(data.game?.execution,{lab:state.lab,sim:state.sim});}catch(error){console.warn(error.message);}
   state.eventCursor=state.lab?.events.length||0;
   if(restored||data.game?.tutorial?.complete)tutorial.restore(data.game?.tutorial);else tutorial.reset();
@@ -413,7 +415,7 @@ document.addEventListener('click',event=>{
     case 'watch-memory':state.watchAddress=state.watchAddress===state.memoryAddress?null:state.memoryAddress;renderPanel();toast(state.watchAddress===null?'Memory watch cleared.':`The world will pause when address 0x${hex(state.watchAddress)} is written.`);scheduleSave();break;
     case 'delete':if(state.mode==='build'&&state.selected){state.builder.remove(state.selected);state.selected=null;rebuildBuilder();renderInspector();toast('Block removed.');}break;
     case 'disconnect':{const port=event.target.closest('button').dataset.port;state.builder.disconnectInput(state.selected,port);rebuildBuilder();renderInspector();toast('Port disconnected. Its input is now unknown.');break;}
-    case 'export-rtl':{const text=state.builder.toVerilog();showWorkbench('rtl');setSource(text);state.dirty=true;$('#editor-dot').textContent='●';compileStatus('Structural Verilog from your blocks. Synthesize to rebuild this circuit.');break;}
+    case 'export-rtl':{const text=state.builder.toVerilog();state.builderSource=text;state.builderSignature=text;showWorkbench('rtl');setSource(text);state.dirty=true;$('#editor-dot').textContent='●';compileStatus('Structural Verilog from your blocks. Synthesize to rebuild this circuit.');break;}
   }}catch(error){toast(error.message,true);}
   if(state.screen==='playing')world.canvas?.focus({preventScroll:true});
 });
@@ -477,5 +479,5 @@ boot();
 
 function renderRtlIO(){
   const element=$('#rtl-io'),sim=activeSim();element.hidden=!!state.lab||!sim;if(element.hidden)return;
-  element.innerHTML=`<span class="io-label">TRY YOUR CIRCUIT</span><div class="generic-io">${Object.entries(sim.module.ports).filter(([n,p])=>p.direction==='input'&&n!==sim.clockInput).map(([n,p])=>`<div class="io-card"><label>IN · ${esc(n)} [${p.bits.length}]</label><input type="number" data-input="${esc(n)}" min="0" max="${2**p.bits.length-1}" value="${sim.getPort(n)??''}" placeholder="X" aria-label="Input ${esc(n)}" /></div>`).join('')}${Object.entries(sim.module.ports).filter(([,p])=>p.direction==='output').map(([n,p])=>`<div class="io-card output"><label>OUT · ${esc(n)} [${p.bits.length}]</label><strong data-output="${esc(n)}">${sim.getPort(n)??'X'}</strong></div>`).join('')}</div>`;
+  element.innerHTML=`<span class="io-label">TRY YOUR CIRCUIT</span><div class="generic-io">${Object.entries(sim.module.ports).filter(([n,p])=>p.direction==='input'&&n!==sim.clockInput).map(([n,p])=>`<div class="io-card"><label>IN · ${esc(n)} [${p.bits.length}]</label><input type="number" data-input="${esc(n)}" data-builder-input="${state.mode==='build'?esc(n):''}" min="0" max="${2**p.bits.length-1}" value="${sim.getPort(n)??''}" placeholder="X" aria-label="Input ${esc(n)}" /></div>`).join('')}${Object.entries(sim.module.ports).filter(([,p])=>p.direction==='output').map(([n,p])=>`<div class="io-card output"><label>OUT · ${esc(n)} [${p.bits.length}]</label><strong data-output="${esc(n)}">${sim.getPort(n)??'X'}</strong></div>`).join('')}</div>`;
 }

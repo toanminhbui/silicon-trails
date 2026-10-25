@@ -331,6 +331,14 @@ export class CircuitWorld {
     const inset = new THREE.MeshStandardMaterial({ color: 0x101e2b, roughness: 0.75, metalness: 0.35 });
     const accent = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.22, metalness: 0.4, roughness: 0.45 });
     const led = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.9 });
+    // Inspection targets the whole monument, including gaps between pillars.
+    // Fine-grained construction tools exclude this volume and hit real ports.
+    const inspectionProxy = this.box(3.9, 2.4, 3.25, 0, 1.16, 0,
+      new THREE.MeshBasicMaterial({ visible: false }));
+    inspectionProxy.castShadow = false;
+    inspectionProxy.receiveShadow = false;
+    inspectionProxy.userData = { nodeId: node.id, inspectionProxy: true };
+    group.add(inspectionProxy);
     group.add(this.box(3.9, 0.24, 3.25, 0, 0.08, 0, shell));
     group.add(this.box(3.55, 0.12, 2.9, 0, 0.25, 0, inset));
     group.add(this.box(3.4, 0.045, 0.09, 0, 0.34, 1.38, accent));
@@ -771,7 +779,7 @@ export class CircuitWorld {
   }
 
   visibleHits() {
-    return this.raycaster.intersectObjects(this.pickables.filter((object) => object.visible), false)
+    return this.raycaster.intersectObjects(this.pickables.filter((object) => object.visible && !(this.tool && object.userData.inspectionProxy)), false)
       .filter((hit) => !this.firstPerson() || hit.distance <= 15);
   }
 
