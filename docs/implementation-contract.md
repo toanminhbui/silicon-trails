@@ -20,6 +20,20 @@ Inputs: `clk`, `reset`, `instruction[15:0]` (asynchronous program ROM indexed by
 
 Instruction fetch latches IR and advances PC in FETCH phase. No program-memory handshake in v1 (asynchronous ROM). EXEC retires immediate/branch/HALT; memory instructions transition DATA_REQ then DATA_WAIT, retiring on response handshake. `retired` is combinational pre-edge event; wrapper samples it before tick. LDI and LOAD update Z, preserve C; ADD/ADDI update Z/C (overflow); SUBI updates Z/C (no borrow); stores/branches preserve flags.
 
+## Reusable construction modules
+
+`src/ui/builder.js` exports `CircuitBuilder` and `BUILDER_TYPES`. The primitive library contains 16 types. Custom instances use `{id,type:"module",moduleId,label,position}` and refer to immutable definitions saved in the builder.
+
+- `previewModule(nodeIds)` infers the selected root subcircuit’s boundary. Its `.ports` entries contain `{name,direction,width,key,bindings}`. Root Input, Switch, and Output blocks cannot be selected for packaging.
+- `createModule({name,nodeIds,portNames:{oldName:newName}})` validates and packages the selection, returning `{moduleId,instanceId}`. It reconnects the selection’s existing external cables through the new instance. The default registered-adder boundary names are `add1_A`, `add1_B`, `register1_EN`, and `register1_Q`.
+- `addModule(moduleId,position)` places another instance. `listModules()` returns detached definitions with IDs, names, ports, functional nodes, edges, and node counts.
+- `getDesign({path:instanceIdArray})` returns a scoped visual graph. Internal nodes have absolute slash-separated IDs, a `localId`, and live bit/cell bindings. Module nodes carry their `instancePath`.
+- `getInstancePorts(path)` returns the instance’s typed ports with actual root-simulator `.bits`. `getDefinitionForPath(path)` resolves its immutable definition.
+
+The runtime expands instances into one flattened circuit with distinct registers for every instance and one shared clock. `toVerilog()` emits hierarchical definitions and instances. `toJSON()` keeps version 1 with an optional `modules` array, so older primitive-only constructions remain readable. Definitions must form a finite acyclic dependency graph; missing/recursive references, invalid boundary mappings, unsupported expansion, and ordinary circuit errors are rejected.
+
+Topology changes restart Builder execution. Opening or closing a module only changes the graph view and retains the same `CircuitSimulator`, clock, registers, and rewind history. Internal views are read-only. The main debug API reports the active path as `getGameState().builderPath`; `game.builderView` can persist that inspection path. Checkpoints retain all nested instance registers. See [the module walkthrough](reusable-modules.md).
+
 ## Spatial renderer
 
 `src/world/world.js` exports `CircuitWorld`, constructor `(container, {onSelect, onConnect, onPlace, onPause, onMove, onTarget}={})`. Methods `setDesign({nodes,edges})`, `updateSignals({nodeValues,edgeValues})`, `select(id)`, `focus(id)`, `teleportToNode(id)`, `resetCamera()`, `setMode("orbit"|"walk"|"build")`, `setTool(typeOrNull)`, `setPaused(boolean)`, `dispose()`. The compatible `walk` mode and `startWalk({reset,lock})` entry now use unconstrained free flight. WASD follows camera orientation; Space rises, Q/C descends, Shift boosts. Each node `{id,label,type,kind,width,position?:[x,y,z],ports?:[{name,direction,width}],source?,scope?}`. Each edge `{id,from,to,fromPort?,toPort?,label?,width?}`. Values maps id → number/null or `{value,active}`. Callbacks selection `(id)`; connection `({from,fromPort,to,toPort})`; placement `({type,position})`. Renderer includes responsive sizing, raycast selection, orbit exploration, and live signal labels. Node positions optional: auto-layout when absent. No DOM UI outside canvas container.

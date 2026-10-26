@@ -21,6 +21,8 @@ Register feedback is valid. Combinational cycles, multiple drivers, unsupported 
 
 Values are unsigned numbers or unknown (`null`/X). Uninitialized registers remain unknown unless their netlist supplies an initial value or their circuit resets/captures a known value. Unconnected Build inputs are X. Where possible, logic still resolves masked unknowns, such as `0 AND X = 0`.
 
+Reusable Builder modules expand into this same executable circuit. Each instance has distinct register cells; all instances share the same clock and simultaneous update rules. Nested inspection reads the corresponding live circuit bits. It does not run a copy of the module in isolation. Packaging, placement, and rewiring change topology and restart construction execution; opening or closing an instance is a view change and preserves execution and rewind history. [The module walkthrough](reusable-modules.md) explains authoring and boundaries.
+
 `CircuitSimulator.reset()` restores its initial netlist state and zeroes top-level inputs. The processor wrapper additionally supplies its real synchronous reset edge and reports the resulting execution state as clock zero.
 
 ## ST-8 architecture

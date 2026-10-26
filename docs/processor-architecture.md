@@ -5,7 +5,7 @@ Silicon Trails exposes three different levels of computer architecture. Each has
 | Workspace | What executes | What can be changed |
 | --- | --- | --- |
 | ST-8 / Processor RTL | A real synthesized 8-bit accumulator CPU, evaluated cell by cell | Assembly program, memory/cache settings, and supported Verilog hardware |
-| Build sandbox | A circuit generated from the player’s primitive blocks and actual port connections | Inputs, gates, arithmetic, multiplexers, registers, wiring, and positions |
+| Build sandbox | A circuit generated from primitive blocks, reusable module instances, and actual port connections | Inputs, arithmetic/control logic, registers, module composition, wiring, and positions |
 | Out-of-order architecture lab | A separate deterministic cycle model of a register-renamed pipeline | Its register-based assembly program and exposed resource settings |
 
 The out-of-order model is not the ST-8’s implementation. Its named queues and maps are also not editable Builder primitives. This separation lets learners investigate a complete small hardware implementation and a larger scheduling model without implying that a Verilog compiler generated the latter.
@@ -16,7 +16,7 @@ The [ST-8 RTL](../src/rtl/examples.js) contains the datapath, control state mach
 
 Program ROM, RAM, cache, and memory-mapped input/output are external simulation services. The CPU still drives requests and waits for the real acknowledgement protocol. A store does not update RAM just because its animation reaches a memory block. Its response handshake commits the byte once. [The simulator model](simulator.md) specifies that protocol, the instruction set, and clock behavior.
 
-The current 16-part Builder is useful for learning the pieces: arithmetic makes a combinational result, one-bit comparator outputs control mux selection or register enables, and an enabled register captures a result at a shared edge. Subtraction, multiplication, and logical shifts extend datapath experiments. The complete palette opens through **All components** or B; its exported structural Verilog describes those same connections. Building a CPU entirely through high-level visual parts still needs a richer construction library: editable instruction decoding, register-file ports, control modules, memory interfaces, bus slicing/extension, reusable modules, and an explicit processor test interface.
+The current 16-part Builder is useful for learning the pieces: arithmetic makes a combinational result, one-bit comparator outputs control mux selection or register enables, and an enabled register captures a result at a shared edge. Subtraction, multiplication, and logical shifts extend datapath experiments. The complete palette opens through **All components** or B; its exported structural Verilog describes those same connections. [Reusable modules](reusable-modules.md) package working subcircuits into typed components, support nested composition, and expose live internal signals. Each instance has independent register state. Building a CPU entirely through high-level visual parts still needs additional facilities: editable instruction decoding, register-file ports, processor memory interfaces, bus slicing/extension, and an explicit processor test interface.
 
 ## The out-of-order path
 

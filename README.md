@@ -13,6 +13,7 @@ A spatial computer architecture game in the browser. Fly through a machine, insp
 - **Learn through actions:** the guided journey tracks actual movement, accumulator inspection, instruction execution, a committed memory write, memory inspection, and opening the RTL workbench.
 - **Pause and inspect:** Escape opens the pause menu and RTL workbench. Choose processor code, memory, execution traces, or cache tools without leaving the world. Player movement and automatic processor execution stop while paused; manual debug steps still work.
 - **Build:** enter the building sandbox from the pause menu. Its 16-part library includes arithmetic, comparisons, shifts, gates, inputs, switches, multiplexers, registers, and outputs. Connect actual ports and export the construction as structural Verilog.
+- **Package and reuse:** turn a selected subcircuit into a named module with typed boundary ports. Place independent copies, compose modules into larger modules, and open an instance to explore its live internal signals. See [the reusable-module walkthrough](docs/reusable-modules.md).
 - **Synthesize:** edit Verilog in the paused workbench and run real Yosys locally in a browser worker. Examples include a full adder, counter, enabled accumulator, and complete processor.
 - **Study out-of-order execution:** enter a separate cycle-based architecture lab with decode, dispatch, register maps, physical registers, reservation stations, a load/store queue, execution units, and a reorder buffer. Follow real readiness, forwarding, and retirement events from its teaching model.
 - **Execute and remember:** assemble programs, step clocks or instructions, inspect retirement traces, and rewind clock edges. Inspect all 256 byte addresses, committed writes, mapped devices, and simulated cache contents. The processor executes through its synthesized cells.
@@ -62,6 +63,7 @@ Unit and integration tests cover real synthesis, connected construction behavior
 5. Choose **Processor RTL**, edit an example, and select **Synthesize**. The resulting circuit remains explorable in the world. Choose **Resume world** to return to playing.
 6. Choose **Build sandbox** to construct a circuit. Use the hotbar or **All components** (**B**) to choose a part, aim at an empty grid location, and press **E** to place it. Feed an adder into a register, capture its result, and change an input. The register holds its previous value until the next enabled clock edge. Equal and Less than produce one-bit control signals for register enables and mux selection.
 7. Open **Viewing scale** in the HUD to change component size or layout spacing. Inspect a component to change its individual scale. The pause menu’s **Component navigator** helps locate parts in a large design.
+8. In **Component library**, choose **Create reusable module**. Select the sample’s adder and register, name the module, review its inferred inputs/output, and choose **Package selection**. Its external cables reconnect to the new instance. Choose the saved module from the library to place another copy; inspect an instance and choose **Open module** to follow its internals.
 
 The gameplay HUD keeps processor run/step controls within reach. The detailed editor, memory grid, and debugging panels appear in paused workbenches.
 
@@ -75,9 +77,9 @@ The supplied ST-8 is a complete, executable 8-bit processor implemented in Veril
 
 The out-of-order architecture lab uses its own assembly and high-level cycle model. It demonstrates register renaming, independent execution, load/store ordering, forwarding, and in-order retirement. It is separate from the synthesized ST-8 and has no branches, branch speculation, exceptions, or editable RTL implementation. See [the processor architecture guide](docs/processor-architecture.md) for experiments, named components, and construction limits.
 
-The synthesis result retains source hierarchy as data; the current UI presents a curated CPU overview or flattened cells. Construction exports to Verilog; arbitrary Verilog does not round-trip into editable construction blocks. Unsupported latches, tri-states, native memory cells, multiple/gated clocks, combinational loops, and wider data paths produce explicit errors.
+Builder modules provide navigable, live construction hierarchy and independent register state per instance. Definitions are immutable after packaging; opening their internals is read-only. The separate RTL synthesis result retains source hierarchy as data; its UI presents a curated CPU overview or flattened cells. Construction exports to Verilog; arbitrary Verilog does not round-trip into editable construction blocks. Unsupported latches, tri-states, native memory cells, multiple/gated clocks, combinational loops, and wider data paths produce explicit errors.
 
-Future directions include a longer build-challenge campaign, reusable player-defined modules, deeper hierarchy navigation, and more processor architectures. See [the game design](docs/design.md) and [the simulator model](docs/simulator.md) for the learning progression and precise execution rules.
+Future directions include a longer build-challenge campaign, editing/versioning packaged definitions, deeper RTL hierarchy navigation, and more processor architectures. See [the game design](docs/design.md) and [the simulator model](docs/simulator.md) for the learning progression and precise execution rules.
 
 ## Code map
 
