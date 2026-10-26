@@ -2,6 +2,8 @@
 
 The runtime executes synthesized hardware. [CircuitSimulator](../src/core/simulator.js) evaluates Yosys cells; [CpuLab](../src/core/cpu-lab.js) supplies external ROM, RAM/cache, mapped devices, and debugging. The CPU’s instruction behavior is implemented by [its Verilog](../src/rtl/examples.js). An independent instruction interpreter appears only in [tests](../tests/cpu.test.js).
 
+The separate [out-of-order architecture lab](processor-architecture.md) executes a high-level cycle model in [OoOLab](../src/core/ooo-lab.js). Its register-based assembly, memory ordering, and queues are independent of ST-8. The hardware and memory protocol below describe the synthesized ST-8 path.
+
 ## Circuit semantics
 
 The synthesis pipeline reads synthesizable Verilog/SystemVerilog, checks the chosen top module, lowers processes, optimizes, saves source hierarchy, then flattens and saves the executable word-level netlist. The browser UI currently uses either flattened cells or a curated architecture overview; saved hierarchy is not yet a fully navigable hierarchy editor.
@@ -122,7 +124,7 @@ The optional blocking cache contains **four lines × four bytes**. An 8-bit addr
 
 Stores do not allocate a line on a miss. There are no dirty lines, writeback, write buffer, coherence, or speculative requests. A line fill has one abstract latency; it does not simulate four physical byte transfers. Hit/miss counts describe cacheable reads; the total reads count also includes uncached reads.
 
-Memory settings restart the program. Cache contents and timing can change while the ISA-visible result of a correctly functioning program remains the same. Block placement and wire length never affect these latencies.
+Memory settings restart the program. Cache contents and timing can change while the ISA-visible result of a correctly functioning program remains the same. Placement, wire length, global viewing scales, and individual component scales never affect these latencies or advance a clock.
 
 ## Saved projects and verification
 

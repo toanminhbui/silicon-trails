@@ -19,11 +19,18 @@ async function pause(page) {
   await page.waitForFunction(() => window.siliconTrails.getGameState().screen === 'paused');
 }
 
+async function holdUntil(page, key, condition, argument) {
+  await page.keyboard.down(key);
+  try { await page.waitForFunction(condition, argument); }
+  finally { await page.keyboard.up(key); }
+}
+
 test('the title screen starts a game without exposing workshop panels or global tabs', async ({ page }) => {
   await ready(page);
   await expect(page.locator('#start-screen h1')).toHaveText(/silicon\s*trails/i);
   await expect(page.getByRole('button', { name: 'Start guided journey', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Explore freely', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Out-of-order architecture lab', exact: true })).toBeVisible();
   await expect(page.locator('#game-hud')).not.toBeVisible();
   await expect(page.locator('#sidebar')).not.toBeVisible();
   await expect(page.locator('.cm-content')).not.toBeVisible();
@@ -35,16 +42,26 @@ test('the title screen starts a game without exposing workshop panels or global 
   await expect(page.locator('.cm-content')).not.toBeVisible();
 });
 
-test('walking moves the player, while pause freezes movement and processor clocks', async ({ page }) => {
+test('free flight moves in three dimensions, while pause freezes movement and processor clocks', async ({ page }) => {
   await startFree(page);
   const initial = await page.evaluate(() => window.siliconTrails.getWorld().camera.position.toArray());
-  await page.keyboard.down('w');
-  try {
-    await page.waitForFunction(origin => {
-      const point = window.siliconTrails.getWorld().camera.position;
-      return Math.hypot(point.x-origin[0],point.y-origin[1],point.z-origin[2]) > 0.2;
-    }, initial);
-  } finally { await page.keyboard.up('w'); }
+  await holdUntil(page, 'w', origin => {
+    const point = window.siliconTrails.getWorld().camera.position;
+    return Math.hypot(point.x-origin[0],point.y-origin[1],point.z-origin[2]) > 0.2;
+  }, initial);
+  const low = await page.evaluate(() => window.siliconTrails.getWorld().camera.position.y);
+  await holdUntil(page, 'Space', y => window.siliconTrails.getWorld().camera.position.y > y + 0.3, low);
+  const high = await page.evaluate(() => window.siliconTrails.getWorld().camera.position.y);
+  await holdUntil(page, 'q', y => window.siliconTrails.getWorld().camera.position.y < y - 0.3, high);
+  const hovering = await page.evaluate(() => window.siliconTrails.getWorld().camera.position.y);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => window.siliconTrails.getWorld().camera.position.y)).toBeCloseTo(hovering, 4);
+  await page.evaluate(() => {
+    const world = window.siliconTrails.getWorld(), p = world.camera.position;
+    world.camera.lookAt(p.x, p.y + 5, p.z - 5);
+    world.camera.updateMatrixWorld(true);
+  });
+  await holdUntil(page, 'w', y => window.siliconTrails.getWorld().camera.position.y > y + 0.2, hovering);
   await page.getByRole('button', { name: 'Run processor', exact: true }).click();
   await pause(page);
   await expect(page.locator('#workbench-panel')).toHaveAttribute('data-station', 'rtl');
@@ -54,8 +71,10 @@ test('walking moves the player, while pause freezes movement and processor clock
     cycle: window.siliconTrails.getState().cycle,
   }));
   await page.keyboard.down('w');
+  await page.keyboard.down('Space');
   await page.waitForTimeout(350);
   await page.keyboard.up('w');
+  await page.keyboard.up('Space');
   expect(await page.evaluate(() => window.siliconTrails.getWorld().camera.position.toArray())).toEqual(paused.position);
   expect(await page.evaluate(() => window.siliconTrails.getState().cycle)).toBe(paused.cycle);
   await page.getByRole('button', { name: /^Resume world/ }).click();
@@ -66,7 +85,47 @@ test('walking moves the player, while pause freezes movement and processor clock
   await expect(page.getByRole('dialog', { name: 'Game paused', exact: true })).toBeVisible();
 });
 
-test('the guided journey advances through real walking, inspection, arithmetic, and saved data', async ({ page }) => {
+test('viewing scales resize and separate components without changing the saved machine', async ({ page }) => {
+  await startFree(page);
+  await page.getByRole('button', { name:'Step instruction', exact:true }).click();
+  await page.getByRole('button', { name:'Step instruction', exact:true }).click();
+  const machine = await page.evaluate(() => ({state:window.siliconTrails.getState(),ram:[...window.siliconTrails.getLab().ram]}));
+  await page.locator('.view-settings summary').click();
+  await page.getByLabel('Component size', { exact:true }).press('Home');
+  await page.getByLabel('Layout spacing', { exact:true }).press('End');
+  await pause(page);
+  await page.getByRole('button', { name:'Component navigator', exact:true }).click();
+  await page.getByLabel('Find component', { exact:true }).fill('Accumulator A');
+  await page.locator('[data-select-node="overview:a"]').click();
+  await expect(page.locator('#inspector .selected-name')).toHaveText('Accumulator A');
+  await page.getByLabel('Selected component size', { exact:true }).press('End');
+  const view = {layoutScale:3,componentScale:0.4,partScales:{'overview:a':3}};
+  expect(await page.evaluate(() => window.siliconTrails.getWorld().getViewSettings())).toEqual(view);
+  const rendered = await page.evaluate(() => {
+    const part = window.siliconTrails.getWorld().nodes.get('overview:a');
+    return {scale:part.group.scale.toArray(),position:part.group.position.toArray(),base:part.basePosition};
+  });
+  for (const size of rendered.scale) expect(size).toBeCloseTo(1.2, 8);
+  expect(rendered.position).toEqual(rendered.base.map(value => value * 3));
+  expect(await page.evaluate(() => ({state:window.siliconTrails.getState(),ram:[...window.siliconTrails.getLab().ram]}))).toEqual(machine);
+  await page.getByRole('button', { name:'Component navigator', exact:true }).click();
+  await page.getByLabel('Find component', { exact:true }).fill('Accumulator A');
+  await page.locator('[data-focus-node="overview:a"]').click();
+  await page.waitForFunction(() => window.siliconTrails.getWorld().lastTarget?.id === 'overview:a');
+  await page.keyboard.press('e');
+  await expect(page.locator('#inspector .selected-name')).toHaveText('Accumulator A');
+  await page.getByRole('button', { name:'Save & title', exact:true }).click();
+  await ready(page);
+  await page.getByRole('button', { name:'Continue world', exact:true }).click();
+  await expect(page.locator('#game-hud')).toBeVisible();
+  expect(await page.evaluate(() => window.siliconTrails.getWorld().getViewSettings())).toEqual(view);
+  expect(await page.evaluate(() => ({state:window.siliconTrails.getState(),ram:[...window.siliconTrails.getLab().ram]}))).toEqual(machine);
+  await page.locator('.view-settings summary').click();
+  await page.getByRole('button', { name:'Reset viewing scale', exact:true }).click();
+  expect(await page.evaluate(() => window.siliconTrails.getWorld().getViewSettings())).toEqual({layoutScale:1,componentScale:1,partScales:{}});
+});
+
+test('the guided journey advances through real flight, inspection, arithmetic, and saved data', async ({ page }) => {
   await ready(page);
   await page.getByRole('button', { name:'Start guided journey', exact:true }).click();
   await expect(page.locator('#tutorial-card')).toBeVisible();
@@ -162,7 +221,7 @@ test('the paused RTL workbench synthesizes edited Verilog into live circuitry', 
   await expect(page.locator('.cm-content')).not.toBeVisible();
 });
 
-test('the building sandbox edits inputs, wires real ports, and places a component', async ({ page }) => {
+test('the building sandbox edits inputs, wires real ports, and places hotbar and library components', async ({ page }) => {
   await startFree(page);
   await pause(page);
   await page.getByRole('button', { name:'Build sandbox', exact:true }).click();
@@ -216,6 +275,78 @@ test('the building sandbox edits inputs, wires real ports, and places a componen
   });
   await page.keyboard.press('e');
   expect(await page.evaluate(() => [...window.siliconTrails.getBuilder().nodes.values()].filter(node => node.type === 'not').length)).toBe(before+1);
+  await expect(page.locator('#component-library-button')).toBeVisible();
+  await pause(page);
+  await page.getByRole('button', { name:'Component library', exact:true }).click();
+  await expect(page.locator('#library-station [data-build-type]')).toHaveCount(16);
+  await page.getByRole('button', { name:'Choose Equal', exact:true }).click();
+  await expect(page.locator('#game-hud')).toBeVisible();
+  await expect(page.locator('#held-item')).toContainText('Equal');
+  await page.evaluate(() => {
+    const world = window.siliconTrails.getWorld();
+    world.startWalk({reset:true});
+    world.camera.lookAt(11,0,19);
+    world.camera.updateMatrixWorld(true);
+  });
+  await page.keyboard.press('e');
+  const comparator = await page.evaluate(() => window.siliconTrails.getGraph().nodes.find(node => node.type === 'eq'));
+  expect(comparator.width).toBe(1);
+  expect(comparator.ports.map(port => [port.name,port.width])).toEqual([['A',8],['B',8],['Y',1]]);
+  expect(await page.evaluate(id => window.siliconTrails.getSimulator().module.cells[id].type, comparator.id)).toBe('$eq');
+  await pause(page);
+  await expect(page.locator('#rtl-station .cm-content')).toContainText('==');
+  await expect(page.locator('#rtl-station .cm-content')).toContainText(comparator.id);
+});
+
+test('the architecture lab renames, executes out of order, forwards, and retires in order', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await ready(page);
+  await page.getByRole('button', { name:'Out-of-order architecture lab', exact:true }).click();
+  await expect(page.locator('#game-hud')).toBeVisible();
+  expect(await page.evaluate(() => window.siliconTrails.getGameState().mode)).toBe('ooo');
+  await page.getByRole('button', { name:'Pipeline', exact:true }).click();
+  await expect(page.locator('#architecture-station')).toBeVisible();
+  await expect(page.locator('#architecture-station')).toContainText('cycle-based teaching model');
+  await expect(page.locator('.cm-content')).not.toBeVisible();
+  for (let clock = 0; clock < 6; clock++) {
+    await page.getByRole('button', { name:'Step architecture clock', exact:true }).click();
+  }
+  const inFlight = await page.evaluate(() => {
+    const lab = window.siliconTrails.getArchitectureLab();
+    return {state:lab.getState(),events:lab.events,ram40:lab.ram[0x40]};
+  });
+  expect(inFlight.state.cycle).toBe(6);
+  expect(inFlight.state.registers[1]).toBe(3);
+  expect(inFlight.state.renameMap[1]).not.toBe(inFlight.state.architecturalMap[1]);
+  expect(inFlight.state.physicalRegisters[inFlight.state.renameMap[1]].value).toBe(7);
+  expect(inFlight.events.some(e => e.type === 'complete' && e.pc === 4)).toBe(true);
+  expect(inFlight.events.some(e => e.type === 'complete' && e.pc === 2)).toBe(false);
+  expect(inFlight.state.rob.find(e => e.pc === 2).ready).toBe(false);
+  expect(inFlight.state.rob.find(e => e.pc === 4).ready).toBe(true);
+  expect(inFlight.events.some(e => e.type === 'forward' && e.id === 7 && e.storeId === 6 && e.value === 11)).toBe(true);
+  expect(inFlight.ram40).toBe(0);
+  await expect(page.locator('#arch-lsq')).toContainText('ROB 6');
+  await expect(page.locator('#arch-rob')).toContainText('MUL R3');
+  for (let clock = 6; clock < 13; clock++) {
+    await page.getByRole('button', { name:'Step architecture clock', exact:true }).click();
+  }
+  const finished = await page.evaluate(() => {
+    const lab = window.siliconTrails.getArchitectureLab();
+    return {state:lab.getState(),trace:lab.trace,ram40:lab.ram[0x40]};
+  });
+  expect(finished.state.halted).toBe(true);
+  expect(finished.state.display).toBe(23);
+  expect(finished.state.registers).toEqual([0,7,4,12,11,11,23,0]);
+  expect(finished.ram40).toBe(11);
+  expect(finished.trace.map(row => row.pc)).toEqual([0,1,2,3,4,5,6,7,8,9]);
+  await page.getByRole('button', { name:'Save & title', exact:true }).click();
+  await ready(page);
+  await page.getByRole('button', { name:'Continue world', exact:true }).click();
+  await expect(page.locator('#game-hud')).toBeVisible();
+  expect(await page.evaluate(() => window.siliconTrails.getGameState().mode)).toBe('ooo');
+  expect(await page.evaluate(() => window.siliconTrails.getArchitectureLab().getState())).toEqual(finished.state);
+  expect(await page.evaluate(() => window.siliconTrails.getArchitectureLab().ram[0x40])).toBe(11);
+  expect(errors).toEqual([]);
 });
 
 test('the title screen, game HUD, and pause menu remain usable at mobile sizes', async ({ page }) => {

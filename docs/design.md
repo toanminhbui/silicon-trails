@@ -1,6 +1,6 @@
 # Game design
 
-Silicon Trails makes computation something a learner can build, inspect, and walk around. Its core loop is **connect → predict → clock → inspect → revise**. A useful machine must emerge from the player’s connections and control logic; animations explain the execution that already happened.
+Silicon Trails makes computation something a learner can build, inspect, and explore from every side. Its core loop is **connect → predict → clock → inspect → revise**. A useful machine must emerge from the player’s connections and control logic; animations explain the execution that already happened.
 
 ## Start from the minimum computer
 
@@ -19,19 +19,21 @@ The first complete processor is an 8-bit accumulator machine, **ST-8**. Its smal
 
 ## Play first; open workbenches while paused
 
-The title screen offers a guided journey and free exploration. Starting enters a full-screen first-person world with a crosshair, a small processor HUD, and an optional tutorial card. Detailed editors and data panels remain in the pause menu. Escape stops player movement and automatic simulation and opens the RTL workbench; manual clock/instruction steps remain available for deliberate debugging. Resume returns to the same world.
+The title screen offers a guided journey and free exploration. Starting enters a full-screen circuit space with a crosshair, a small processor HUD, and an optional tutorial card. Flight follows the camera direction: WASD translates, Space rises, Q/C descends, and Shift boosts speed. No gravity or terrain collision constrains inspection. Detailed editors and data panels remain in the pause menu. Escape stops navigation and automatic simulation and opens the RTL workbench; manual clock/instruction steps remain available for deliberate debugging. Resume returns to the same world.
 
 The pause menu connects the following activities without introducing global application tabs.
 
 **Explore the world:** approach and interact with a working processor. Its architecture view groups actual synthesized cells into PC, instruction register, accumulator, flags, controller, decode/routing, and arithmetic blocks. Program ROM, RAM/cache, and the display are explicitly identified as external simulation services. Inspecting an implemented block can reveal its actual cells and RTL source location.
 
-**Build sandbox:** enter from the pause menu and construct real circuits from typed ports in the world. The initial palette contains 8-bit inputs and outputs, a 1-bit switch, ADD, AND, OR, XOR, NOT, a multiplexer, and an enabled register. The construction’s connections generate the same cell-netlist format the simulator consumes. Unconnected inputs stay unknown. Reconnecting a destination replaces its previous connection; incompatible widths and combinational feedback are rejected. Changing construction restarts execution.
+**Build sandbox:** enter from the pause menu and construct real circuits from typed ports in the world. The 16-part library contains 8-bit inputs and outputs, a 1-bit switch, ADD, SUB, MUL, Equal, Less than, left/right logical shifts, AND, OR, XOR, NOT, a multiplexer, and an enabled register. The hotbar holds common parts; **All components** or B opens the complete library. Equal and unsigned Less than compare two eight-bit inputs and produce a one-bit control signal that can drive a mux selector or register enable. The construction’s connections generate the same cell-netlist format the simulator consumes. Unconnected inputs stay unknown. Reconnecting a destination replaces its previous connection; incompatible widths and combinational feedback are rejected. Changing construction restarts execution. These primitives support arithmetic, control, and state experiments; the current Builder does not expose dedicated editable register files, instruction decoders, processor memory interfaces, or out-of-order pipeline structures.
 
 **Processor RTL:** edit hardware in a paused workbench. Verilog passes through real Yosys synthesis and then the same circuit engine. Changing an addition to a subtraction changes both the resulting implementation and its behavior. Structural Verilog exported from Build can enter this flow. A general reverse conversion from synthesized RTL into editable Build components is outside the current MVP.
 
+**Architecture lab:** explore a separate out-of-order cycle model with named decode, dispatch, register maps, physical registers, reservation stations, execution units, a load/store queue, and reorder buffer. It runs register-based assembly and exposes actual queue entries, operand readiness, forwarding, and ordered retirement. It does not replace the synthesized ST-8 or turn these units into editable Builder components. The [processor architecture guide](processor-architecture.md) describes the model and its limits.
+
 ## Learning progression
 
-The introductory guided journey advances through real events: walking three world units, inspecting Accumulator A, producing 12 through instructions, committing `STORE 0x40`, inspecting the saved byte, and opening RTL. Buttons request actions rather than advancing a lesson counter. Earlier valid observations remain recorded when the next milestone is reached.
+The introductory guided journey advances through real events: flying three world units, inspecting Accumulator A, producing 12 through instructions, committing `STORE 0x40`, inspecting the saved byte, and opening RTL. Buttons request actions rather than advancing a lesson counter. Earlier valid observations remain recorded when the next milestone is reached.
 
 The wider sandbox supports the following progression; a longer challenge campaign and scoring remain future work.
 
@@ -71,12 +73,14 @@ Future challenge checking should use the same principle: test the player’s act
 
 ## Spatial rules
 
-The world provides orientation, discoverability, and room to arrange a construction. First-person movement, grounded navigation, interaction prompts, and tutorial beacons guide the player. Pausing disables world input and preserves the player’s position. Block positions, wire lengths, camera movement, and animation frame rate never decide a circuit’s result or memory latency.
+The circuit space provides orientation, discoverability, and room to arrange a construction. Free flight, a reference grid, interaction prompts, a component navigator, and tutorial beacons guide the player. The setting keeps attention on the machine rather than vegetation or terrain traversal. Pausing disables world input and preserves the camera’s position.
+
+Three independent controls address visual density: layout spacing moves component centers apart, component size changes all component bodies, and a per-part scale changes one selected component. Wiring follows the transformed ports. These controls preserve the executable circuit and its current state. They are logical views, not chip floorplanning, lithography, or electrical scale. Positions, wire lengths, camera movement, viewing scale, and animation frame rate never decide a circuit’s result or memory latency.
 
 The introductory journey establishes a play-and-inspect loop. A future campaign may add build objectives, reusable blueprints, further progression, and richer programmable devices. Those additions should preserve deterministic simulation and make every successful machine explainable.
 
 ## Persistence
 
-Local autosave and exported world JSON preserve the construction, Verilog source, compiled design, assembly program, selected settings, and guided-journey progress. A validated execution checkpoint retains register/input values, the current clock, RAM, cache contents, pending transactions, input/display state, and recent execution and memory events. This keeps a resumed lesson consistent with the number the player already saved.
+Local autosave and exported world JSON preserve the construction, Verilog source, compiled design, assembly program, viewing scales, selected settings, and guided-journey progress. A validated hardware execution checkpoint retains register/input values, the current clock, RAM, cache contents, pending transactions, input/display state, and recent execution and memory events. The separate architecture model stores its own program, configuration, queue/register state, and memory checkpoint. This keeps a resumed lesson consistent with the number the player already saved.
 
-Checkpoints must match the saved circuit and program before they can change live state. Recent logs are bounded to 1,024 entries each, and rewind history starts fresh after loading. Player position is not persisted; Continue respawns at camp. Older world files without an execution checkpoint restart the machine and reset an unfinished guided journey.
+Checkpoints must match the saved circuit and program before they can change live state. Recent logs are bounded to 1,024 entries each, and rewind history starts fresh after loading. Camera position is not persisted; Continue returns to the starting viewpoint. Older world files without an execution checkpoint restart the machine and reset an unfinished guided journey.
