@@ -13,6 +13,7 @@ import { captureExecution, restoreExecution } from './game/snapshot.js';
 import { OoOLab, OOO_PROGRAMS } from './core/ooo-lab.js';
 import { makeOooOverview, getOooOverviewSignals } from './ui/ooo-overview.js';
 import { renderArchitecture } from './ui/architecture-panel.js';
+import { moduleCards, moduleAuthoring, moduleBoundaryFields } from './ui/module-workbench.js';
 import { icon, escapeHtml as esc, hex } from './ui/icons.js';
 
 const BASE=import.meta.env.BASE_URL;
@@ -28,9 +29,9 @@ const state={
   programSource:PROGRAMS[0].source,programName:PROGRAMS[0].name,
   genericHistory:[],genericTrace:[],dirty:false,compiling:false,guided:false,
   target:null,eventCursor:0,ignoreEscapeUntil:0,builderSource:null,builderSignature:null,
-  ooo:null,
+  ooo:null,builderPath:[],builderTrail:[],
 };
-let world,editor,EditorViewClass,editorPromise,suppressEditor=false,toastTimer,saveTimer;
+let world,editor,EditorViewClass,editorPromise,suppressEditor=false,toastTimer,saveTimer,moduleDraft=null;
 let lastFrame=0,clockBudget=0,lastHud=0,lastGuideKey='',lastPlayerSave=0,lastExecutionSave=0;
 
 $('#app').innerHTML=`<main id="game" class="game-shell" data-screen="start">
@@ -43,7 +44,7 @@ $('#app').innerHTML=`<main id="game" class="game-shell" data-screen="start">
       <div class="title-small-actions"><button data-action="import">Load a world</button><span>◆</span><button data-action="controls">How to play</button></div>
     </div>
     <div class="title-corner"><span class="pixel-square"></span> LAB 01 <span class="title-corner-line">THE PROCESSOR ATLAS</span></div>
-    <div class="title-footer"><span id="title-status">Connecting the circuit…</span><a href="https://github.com/toanminhbui/silicon-trails" target="_blank" rel="noopener">Explore the source ${icon('external',11)}</a><span>v0.3 · browser edition</span></div>
+    <div class="title-footer"><span id="title-status">Connecting the circuit…</span><a href="https://github.com/toanminhbui/silicon-trails" target="_blank" rel="noopener">Explore the source ${icon('external',11)}</a><span>v0.4 · browser edition</span></div>
   </section>
   <section id="game-hud" class="game-hud" aria-label="Game heads-up display" hidden>
     <div class="location-plaque"><div class="plaque-icon">${icon('compass',22)}</div><div><strong>THE PROCESSOR ATLAS</strong><span id="location-subtitle">ST-8 PROCESSOR · EXPLORATION</span></div></div>
@@ -57,6 +58,7 @@ $('#app').innerHTML=`<main id="game" class="game-shell" data-screen="start">
     <div class="processor-hud"><button class="run-switch" data-action="run" aria-label="Run processor" title="Run processor">${icon('play',16)}</button><div><span id="hud-phase">PROCESSOR READY</span><strong id="hud-clock">CLOCK 00000</strong></div><span class="hud-a" id="hud-a">A 00</span></div>
     <div class="held-item" id="held-item">Inspection lens</div><div class="hotbar" id="hotbar" aria-label="Game tools"></div>
     <button id="component-library-button" class="build-library-button" data-action="library" hidden>${icon('blocks',15)} All components <kbd>B</kbd></button>
+    <nav id="module-breadcrumb" class="module-breadcrumb" aria-label="Circuit hierarchy" hidden></nav>
     <div class="saved-indicator" id="save-label">WORLD SAVED</div>
     <div id="mobile-controls" class="mobile-controls"><div class="touch-pad"><button data-move="KeyW" aria-label="Move forward">▲</button><button data-move="KeyA" aria-label="Move left">◀</button><button data-move="KeyS" aria-label="Move backward">▼</button><button data-move="KeyD" aria-label="Move right">▶</button></div><button class="touch-jump" data-move="Space" aria-label="Fly up">↑</button><button class="touch-down" data-move="KeyQ" aria-label="Fly down">↓</button><button class="touch-inspect" data-action="interact" aria-label="Inspect target">E</button></div>
   </section>
@@ -93,11 +95,11 @@ world=new CircuitWorld($('#world'),{
     else if(state.workbench==='inspect')renderInspector();
   },
   onPlace({type,position}){
-    if(state.screen!=='playing'||state.mode!=='build')return;
-    try{state.selected=state.builder.add(type,position);rebuildBuilder();toast('Block placed. Connect its ports to bring it to life.');}catch(error){toast(error.message,true);}
+    if(state.screen!=='playing'||state.mode!=='build'||state.builderPath.length)return;
+    try{state.selected=type.startsWith('module:')?state.builder.addModule(type.slice(7),position):state.builder.add(type,position);rebuildBuilder();toast('Component placed. Connect its ports to bring it to life.');}catch(error){toast(error.message,true);}
   },
   onConnect(connection){
-    if(state.screen!=='playing'||state.mode!=='build')return;
+    if(state.screen!=='playing'||state.mode!=='build'||state.builderPath.length)return;
     const old=state.builder.toJSON();
     try{state.builder.connect(connection);rebuildBuilder();toast('Connection made. Your wiring is the circuit.');}catch(error){state.builder=CircuitBuilder.fromJSON(old);toast(error.message,true);}
   },
@@ -135,7 +137,7 @@ function useCompiled(compiled,{exampleId=state.exampleId,preserveSource=false}={
   const cpu=['instruction','mem_valid','mem_resp_ready','retired','retire_pc','halted','fault'].every(n=>sim.module.ports[n]);
   const lab=cpu?new CpuLab(compiled.netlist,{latency:state.latency,cache:state.cache}):null;
   if(lab)lab.loadProgram(state.programSource);
-  stop();state.resumeRunning=false;state.compiled=compiled;state.exampleId=exampleId;state.lab=lab;state.sim=cpu?null:sim;state.mode='explore';state.view=cpu?'overview':'cells';state.scope=null;
+  stop();state.resumeRunning=false;state.compiled=compiled;state.exampleId=exampleId;state.lab=lab;state.sim=cpu?null:sim;state.mode='explore';state.view=cpu?'overview':'cells';state.scope=null;state.builderPath=[];state.builderTrail=[];
   state.genericHistory=[];state.genericTrace=[];state.eventCursor=0;state.selected=cpu?'overview:a':null;
   if(!preserveSource)setSource(compiled.source||RTL_EXAMPLES.find(x=>x.id===exampleId)?.source||'');
   if(!cpu)resetGeneric(RTL_EXAMPLES.find(x=>x.id===exampleId)?.inputs||{});
@@ -159,7 +161,7 @@ function rebuildBuilder(){
 function buildScene(){
   let graph;
   if(state.mode==='ooo')graph=makeOooOverview(state.ooo);
-  else if(state.mode==='build')graph=state.builder.getDesign();
+  else if(state.mode==='build')graph=state.builder.getDesign({path:state.builderPath});
   else if(state.lab&&state.view==='overview')graph=makeCpuOverview(state.compiled);
   else{
     graph=makeNetlistGraph(state.compiled);
@@ -167,7 +169,7 @@ function buildScene(){
       for(const e of graph.edges)if(anchors.has(e.from)||anchors.has(e.to)){visible.add(e.from);visible.add(e.to);}graph={...graph,nodes:graph.nodes.filter(n=>visible.has(n.id)),edges:graph.edges.filter(e=>visible.has(e.from)&&visible.has(e.to))};}
   }
   state.graph=graph;world.setDesign(graph);if(!graph.nodes.some(n=>n.id===state.selected))state.selected=graph.nodes.find(n=>n.kind==='register')?.id||graph.nodes[0]?.id;
-  world.select(state.selected);updateSignals();renderTutorial();
+  world.select(state.selected);updateSignals();renderTutorial();renderBuilderBreadcrumb();
 }
 function updateSignals(){if(!state.graph)return;if(state.mode==='ooo'){world.updateSignals(getOooOverviewSignals(state.graph,state.ooo));return;}const sim=activeSim();if(!sim)return;world.updateSignals(state.lab&&state.view==='overview'&&state.mode!=='build'?getCpuOverviewSignals(state.graph,state.lab):getGraphSignals(state.graph,sim));}
 
@@ -214,7 +216,7 @@ function titleScreen(){
   closeModal();stop();state.resumeRunning=false;state.screen='start';state.workbench=null;state.tool=null;world.setTool(null);world.startPanorama();syncScreen();saveNow();
 }
 function enterBuilder(){
-  closeModal();tutorial.stop();state.guided=false;state.mode='build';state.selected='register1';state.tool=null;rebuildBuilder();state.screen='playing';state.workbench=null;state.hasSave=true;
+  closeModal();tutorial.stop();state.guided=false;state.mode='build';state.builderPath=[];state.builderTrail=[];state.selected='register1';state.tool=null;rebuildBuilder();state.screen='playing';state.workbench=null;state.hasSave=true;
   world.setTool(null);world.setPaused(false);world.startWalk({reset:true,lock:false});syncScreen();renderHotbar();renderTutorial();toast('Build sandbox. Choose a block from your hotbar, then place it in the world.');scheduleSave();
 }
 function enterArchitecture({fresh=false}={}){
@@ -227,7 +229,7 @@ function enterArchitecture({fresh=false}={}){
   toast('Architecture lab. Inspect a unit with E. Step clocks to follow renaming, execution, and retirement.');
 }
 function setMode(mode){if(mode==='ooo'){enterArchitecture();return;}if(mode==='rtl'){pauseGame('rtl');return;}if(mode==='build'){enterBuilder();return;}if(state.defaultCompiled){useCompiled(state.defaultCompiled,{exampleId:'cpu'});state.tool=null;world.setTool(null);if(state.screen==='playing')world.startWalk({reset:true});}}
-function setTool(type){if(state.mode!=='build')return;state.tool=state.tool===type?null:type;world.setTool(state.tool);renderHotbar();world.canvas?.focus({preventScroll:true});}
+function setTool(type){if(state.mode!=='build')return;if(state.builderPath.length){toast('Return to the parent circuit to place parts or change wiring.');return;}state.tool=state.tool===type?null:type;world.setTool(state.tool);renderHotbar();world.canvas?.focus({preventScroll:true});}
 
 function step(kind='clock',render=true){
   if(state.mode==='ooo'){
@@ -268,6 +270,7 @@ function renderHud(){
   document.querySelectorAll('[data-station="architecture"]').forEach(el=>el.hidden=state.mode!=='ooo');
   const rtlButton=$('button[data-station="rtl"]');rtlButton.hidden=state.mode==='ooo';$('button[data-station="cache"]').hidden=state.mode==='ooo';
   $('#component-library-button').hidden=state.mode!=='build';
+  if(state.mode==='build'&&state.builderPath.length)$('#location-subtitle').textContent='LIVE MODULE INTERNALS · INSPECTION';
 }
 function genericOutput(){const sim=activeSim();if(!sim)return 0;const name=Object.keys(sim.module.ports).find(n=>sim.module.ports[n].direction==='output');return name?(sim.getPort(name)??'X'):0;}
 function renderTarget(){
@@ -276,9 +279,9 @@ function renderTarget(){
 const explorerTools=[['interact','target','Inspect'],['instruction','step','Instruction'],['clock','clock','Clock'],['memory','memory','Memory'],['enter-build','blocks','Build'],['processor','chip','Processor'],['guide','book','Guide'],['rtl','code','Source'],['export','save','Save']];
 const buildTools=[[null,'target','Inspect'],['wire','wire','Wire'],['input','blocks','Input'],['switch','light','Switch'],['add','plus','Adder'],['register','chip','Register'],['mux','compass','Mux'],['output','light','Output'],['not','blocks','NOT']];
 function renderHotbar(){
-  const build=state.mode==='build',tools=build?buildTools:state.mode==='ooo'?[['interact','target','Inspect'],['instruction','step','Retire'],['clock','clock','Clock'],['architecture','blocks','Pipeline'],['navigator','compass','Units'],['processor','chip','RTL CPU'],['guide','book','Guide'],['ooo-program','code','Program'],['export','save','Save']]:explorerTools;
+  const build=state.mode==='build'&&!state.builderPath.length,tools=build?buildTools:state.mode==='build'?[['interact','target','Inspect'],['clock','clock','Clock'],['parent-module','blocks','Parent'],['navigator','compass','Find'],['library','blocks','Library'],['rtl','code','Source'],['guide','book','Guide'],['root-module','chip','Root'],['export','save','Save']]:state.mode==='ooo'?[['interact','target','Inspect'],['instruction','step','Retire'],['clock','clock','Clock'],['architecture','blocks','Pipeline'],['navigator','compass','Units'],['processor','chip','RTL CPU'],['guide','book','Guide'],['ooo-program','code','Program'],['export','save','Save']]:explorerTools;
   $('#hotbar').innerHTML=tools.map(([action,glyph,label],index)=>`<button class="hotbar-item ${(build?state.tool===action:index===0)?'selected':''}" ${build?`data-tool="${action??''}"`:`data-action="${action}"`} aria-label="${esc(build?label:action==='instruction'?'Step instruction':action==='clock'?'Step clock':label)}" title="${index+1} · ${esc(label)}"><small>${index+1}</small>${icon(glyph,23)}<span>${esc(label)}</span></button>`).join('');
-  $('#held-item').textContent=build?(BUILDER_TYPES[state.tool]?.label||buildTools.find(t=>t[0]===state.tool)?.[2]||'Inspection lens'):'Inspection lens';renderHud();
+  $('#held-item').textContent=build?(state.tool?.startsWith('module:')?state.builder.listModules().find(d=>d.id===state.tool.slice(7))?.name:BUILDER_TYPES[state.tool]?.label||buildTools.find(t=>t[0]===state.tool)?.[2]||'Inspection lens'):'Inspection lens';renderHud();
 }
 function renderTutorial(){
   const t=tutorial.getCurrent(),visible=state.guided&&(t.active||t.complete);$('#tutorial-card').hidden=!visible;
@@ -317,6 +320,7 @@ function nodeValue(node){
 
 function renderInspector(){
   const node=state.graph?.nodes.find(n=>n.id===state.selected),cpu=state.lab?.getState(),sim=activeSim();
+  if(state.mode==='build'&&node?.type==='module'&&sim){renderModuleInspector(node,sim);return;}
   if(state.mode==='ooo'&&node){$('#inspector').innerHTML=`<div class="selected-card"><div class="eyebrow">ARCHITECTURE TEACHING MODEL</div><h3 class="selected-name">${esc(node.label)}</h3><p class="side-description">${esc(node.description||'')}</p><div class="guide-actions"><button class="btn" data-action="focus">${icon('target',13)} Fly to this unit</button><button class="btn" data-station="architecture">Inspect live pipeline</button></div>${partScaleControl(node)}</div><div class="ooo-unit-state">${renderArchitecture(state.ooo,{section:node.id,compact:true})}</div>`;return;}
   if(!node||!sim){$('#inspector').innerHTML='<div class="empty-state">Select a component in the world to inspect its live values and connections.</div>';return;}
   const width=Math.min(node.width||8,32),value=nodeValue(node),bits=value==null?'X'.repeat(Math.min(width,16)):Number(value).toString(2).padStart(width,'0').slice(-16);
@@ -324,17 +328,17 @@ function renderInspector(){
   let ports=[];
   const cell=sim.module.cells[node.cellId||node.id];
   if(cell)ports=Object.entries(sim.getCellPorts(node.cellId||node.id)).map(([name,val])=>({name,value:val,width:cell.connections[name].length}));
-  else if(node.ports)ports=node.ports.map(p=>({name:p.name,value:p.name==='Q'||p.direction==='output'?value:undefined,width:p.width}));
+  else if(node.ports)ports=node.ports.map(p=>({name:p.name,value:p.bits?sim.getBits(p.bits):p.name==='Q'||p.direction==='output'?value:undefined,width:p.width}));
   const source=String(node.source||cell?.attributes?.src||'');
   const description=node.description || (node.kind==='register'?'Captures its input at the active clock edge and holds the value between edges.':node.kind==='alu'?'Transforms its current inputs. Inspect the output before capturing it in a register.':node.kind==='memory'?'Addressed storage. Values change only when a write commits.':'Part of the live circuit. Its value follows its inputs and connections.');
-  $('#inspector').innerHTML=`<div class="inspector-top"><div class="inspector-heading"><h2>Component inspector</h2><span class="status-badge ${cpu?.halted?'halted':''}">${cpu?.halted?'HALTED':state.running?'RUNNING':'LIVE'}</span></div></div>
+  $('#inspector').innerHTML=`${state.mode==='build'&&state.builderPath.length?moduleInspectionToolbar():''}<div class="inspector-top"><div class="inspector-heading"><h2>Component inspector</h2><span class="status-badge ${cpu?.halted?'halted':''}">${cpu?.halted?'HALTED':state.running?'RUNNING':'LIVE'}</span></div></div>
     <div class="selected-card"><div class="selected-icon" style="color:${kindColor(node.kind)}">${icon(node.kind==='memory'?'memory':node.kind==='alu'?'plus':node.kind==='output'?'light':'chip',22)}</div><h3 class="selected-name">${esc(shortLabel(node.label||node.id,30))}</h3><div class="selected-type">${esc(node.type||node.kind||'circuit component')} · ${width}-bit</div>
     <div class="value-display"><div class="value-heading"><span>CURRENT VALUE</span><span>${width} BITS</span></div><div class="big-value"><strong>${value===undefined?'—':value===null?'X':value}</strong><span>${value==null?'unknown':`0x${hex(value,Math.ceil(width/4))}`}</span></div><div class="bit-row">${[...bits].map(b=>`<span class="bit ${b==='1'?'on':b==='X'?'unknown':''}">${b}</span>`).join('')}</div></div>
     <div class="details"><div class="detail-row"><span>Kind</span><span>${esc(node.kind||'logic')}</span></div><div class="detail-row"><span>State changes</span><span>${node.kind==='register'?'Clock edge':'Input / service'}</span></div>${source?`<div class="detail-row"><span>Source</span><span title="${esc(source)}">${esc(source.split('|')[0])}</span></div>`:''}</div><p class="side-description" style="margin-top:15px">${esc(description)}</p>
-    <div style="display:flex;gap:6px;margin-top:14px"><button class="btn small" data-action="focus">${icon('target',12)} Focus</button>${state.mode==='build'?`<button class="btn small danger" data-action="delete">${icon('trash',12)} Remove</button>`:`<button class="btn small" data-action="source">${icon('code',12)} View RTL</button>`}</div>${node.id==='overview:ram'?`<button class="btn small" data-station="memory" style="width:100%;margin-top:8px">${icon('memory',12)} Open memory bank</button>`:''}${node.id==='overview:rom'?`<button class="btn small" data-action="program" style="width:100%;margin-top:8px">${icon('code',12)} Read the program</button>`:''}${node.cellIds?.length?`<button class="btn small" data-action="expand-node" style="width:100%;margin-top:7px">${icon('blocks',12)} Explore ${node.cellIds.length} implementing cells</button>`:''}</div>
-    ${inputName?`<div class="inspector-section"><div class="eyebrow">DRIVE THIS INPUT</div><div class="port-row"><span>${esc(inputName)}</span><input data-input="${esc(inputName)}" data-builder-input="${state.mode==='build'?esc(node.id):''}" type="number" min="0" max="${2**width-1}" value="${sim.getPort(inputName)??''}" placeholder="X" aria-label="Value of ${esc(inputName)}" /></div></div>`:''}
+    <div style="display:flex;gap:6px;margin-top:14px"><button class="btn small" data-action="focus">${icon('target',12)} Focus</button>${state.mode==='build'?(state.builderPath.length?'':`<button class="btn small danger" data-action="delete">${icon('trash',12)} Remove</button>`):`<button class="btn small" data-action="source">${icon('code',12)} View RTL</button>`}</div>${node.id==='overview:ram'?`<button class="btn small" data-station="memory" style="width:100%;margin-top:8px">${icon('memory',12)} Open memory bank</button>`:''}${node.id==='overview:rom'?`<button class="btn small" data-action="program" style="width:100%;margin-top:8px">${icon('code',12)} Read the program</button>`:''}${node.cellIds?.length?`<button class="btn small" data-action="expand-node" style="width:100%;margin-top:7px">${icon('blocks',12)} Explore ${node.cellIds.length} implementing cells</button>`:''}</div>
+    ${inputName&&!(state.mode==='build'&&state.builderPath.length)?`<div class="inspector-section"><div class="eyebrow">DRIVE THIS INPUT</div><div class="port-row"><span>${esc(inputName)}</span><input data-input="${esc(inputName)}" data-builder-input="${state.mode==='build'?esc(node.id):''}" type="number" min="0" max="${2**width-1}" value="${sim.getPort(inputName)??''}" placeholder="X" aria-label="Value of ${esc(inputName)}" /></div></div>`:''}
     ${cpu?`<div class="inspector-section"><div class="eyebrow">PROCESSOR STATE</div><div class="registers"><div class="register"><label>ACCUMULATOR A</label><strong>${cpu.a??'X'}</strong><small>0x${hex(cpu.a)}</small></div><div class="register"><label>PROGRAM COUNTER</label><strong>${hex(cpu.pc)}</strong><small>instruction address</small></div><div class="register"><label>ZERO / CARRY</label><strong>${cpu.z} / ${cpu.c}</strong><small>condition flags</small></div><div class="register"><label>OUTPUT DISPLAY</label><strong>${cpu.display}</strong><small>mapped at 0xFE</small></div></div></div><div class="inspector-section"><div class="eyebrow">${phaseNames[cpu.state]||'CONTROLLER'}</div><div class="instruction-card"><code>${esc(disassemble(cpu.ir))}</code><p>${cpu.pending?`A ${cpu.pending.write?'write':'read'} at 0x${hex(cpu.pending.address)} is pending. ${cpu.pending.remaining+1} clock${cpu.pending.remaining?'s':''} until completion.`:'Select Instruction to advance through every microstep of the current operation.'}</p></div><div class="port-row" style="margin-top:12px"><span>Input port 0xFF</span><input id="cpu-input" type="number" min="0" max="255" value="${state.lab.input}" aria-label="Memory mapped input byte" /></div></div>`:`<div class="inspector-section"><div class="eyebrow">COMPONENT PORTS</div><div class="port-list">${ports.map(p=>`<div class="port-row"><span>${esc(p.name)} [${p.width}]</span><span class="port-value">${p.value===undefined?'—':p.value===null?'X':`0x${hex(p.value)}`}</span></div>`).join('')||'<p class="side-description">Select an input to change its value.</p>'}</div></div>`}
-    ${state.mode==='build'?`<div class="inspector-section">${(node.ports||[]).filter(p=>p.direction==='input').map(p=>`<div class="port-row"><span>${esc(p.name)} [${p.width}]</span><button class="btn ghost small" style="margin-left:auto" data-action="disconnect" data-port="${esc(p.name)}" ${state.builder.edges.some(e=>e.to===node.id&&e.toPort===p.name)?'':'disabled'}>Disconnect</button></div>`).join('')}<button class="btn small" data-action="export-rtl" style="width:100%">${icon('code',12)} Open this circuit as Verilog</button><p class="side-description" style="margin-top:10px">Changing connections restarts execution. Unconnected inputs remain unknown.</p></div>`:''}${partScaleControl(node)}`;
+    ${state.mode==='build'&&!state.builderPath.length?`<div class="inspector-section">${(node.ports||[]).filter(p=>p.direction==='input').map(p=>`<div class="port-row"><span>${esc(p.name)} [${p.width}]</span><button class="btn ghost small" style="margin-left:auto" data-action="disconnect" data-port="${esc(p.name)}" ${state.builder.edges.some(e=>e.to===node.id&&e.toPort===p.name)?'':'disabled'}>Disconnect</button></div>`).join('')}<button class="btn small" data-action="export-rtl" style="width:100%">${icon('code',12)} Open this circuit as Verilog</button><p class="side-description" style="margin-top:10px">Changing connections restarts execution. Unconnected inputs remain unknown.</p></div>`:''}${partScaleControl(node)}`;
 }
 
 function partScaleControl(node){const scale=world.getViewSettings().partScales[node.id]??1;return `<label class="part-scale-control">This component’s size <output id="part-scale-value">${scale}×</output><input id="part-scale" type="range" min="0.4" max="3" step="0.1" value="${scale}" aria-label="Selected component size" /></label><p class="fine-print">Changes its viewing size. Ports, cables, and selection follow the component.</p>`;}
@@ -346,9 +350,52 @@ function renderNavigator(filter=''){
 function renderOooPanel(){
   $('#architecture-station').innerHTML=state.mode==='ooo'?renderArchitecture(state.ooo):`<div class="empty-state"><strong>Explore an out-of-order processor.</strong><p>Inspect decode, dispatch, renaming maps, reservation stations, load/store ordering, and the reorder buffer in a cycle-based teaching model.</p><button class="btn primary" data-action="enter-ooo">Enter architecture lab</button></div>`;
 }
+function moduleInspectionToolbar(){return `<div class="module-inspection-toolbar"><span>LIVE INSPECTION · SAME CIRCUIT &amp; CLOCK</span><div><button class="btn small" data-action="clock" aria-label="Step module clock">${icon('clock',13)} Step clock</button><button class="btn small" data-action="rewind">Rewind</button>${state.builderPath.length?'<button class="btn small" data-action="parent-module">Back to parent</button>':'<button class="btn small" data-station="library">Open component library</button>'}</div><p>Opening a module preserves register state. Return to the root circuit to change its wiring or place parts.</p></div>`;}
+function renderModuleInspector(node,sim){
+  const path=node.instancePath||[...state.builderPath,node.localId||node.id];
+  const ports=state.builder.getInstancePorts(path),def=state.builder.getDefinitionForPath(path);
+  $('#inspector').innerHTML=`${moduleInspectionToolbar()}<div class="selected-card module-selected-card"><div class="eyebrow">REUSABLE MODULE · INDEPENDENT INSTANCE</div><h3 class="selected-name">${esc(node.label||def.name)}</h3><p class="side-description">An instance of <strong>${esc(def.name)}</strong>. Its internal registers belong to this instance. All modules use the circuit’s shared rising-edge clock.</p><div class="module-port-values">${ports.map(p=>{const v=sim.getBits(p.bits);return `<div data-module-signal="${esc(p.name)}"><span>${p.direction==='input'?'IN':'OUT'} · ${esc(p.name)} <small>[${p.width}]</small></span><strong>${v===null?'X':v}</strong><small>${v===null?'unknown':`0x${hex(v,Math.ceil(p.width/4))}`}</small></div>`;}).join('')}</div><div class="guide-actions"><button class="btn primary" data-action="open-module">${icon('blocks',14)} Open module</button><button class="btn" data-action="focus">${icon('target',13)} Fly to instance</button>${!state.builderPath.length?'<button class="btn danger" data-action="delete">Remove instance</button>':''}</div><p class="fine-print">Library definitions are immutable. Removing an instance preserves its definition and every other instance.</p>${partScaleControl(node)}</div>`;
+}
+function renderBuilderBreadcrumb(){
+  const el=$('#module-breadcrumb');if(!el)return;el.hidden=state.mode!=='build'||!state.builderPath.length;
+  if(el.hidden)return;
+  el.innerHTML=`<button data-builder-level="0">${icon('blocks',13)} Build sandbox</button>${state.builderPath.map((id,i)=>`<span>›</span><button data-builder-level="${i+1}" ${i===state.builderPath.length-1?'aria-current="location"':''}>${esc(state.builderTrail[i]||id)}</button>`).join('')}<small>LIVE INTERNALS · INSPECT ONLY</small>`;
+}
+function openBuilderModule(){
+  const node=state.graph?.nodes.find(n=>n.id===state.selected);if(state.mode!=='build'||node?.type!=='module')return;
+  const path=node.instancePath||[...state.builderPath,node.localId||node.id];state.builder.getDesign({path});
+  state.builderPath=[...path];state.builderTrail=[...state.builderTrail,node.label||node.localId||node.id];state.tool=null;state.selected=null;
+  world.setTool(null);buildScene();resumeGame();world.startWalk({reset:true});renderHotbar();scheduleSave();toast('Inside this instance. Signals and registers come from the same live circuit.');
+}
+function setBuilderLevel(depth){
+  if(state.mode!=='build'||!Number.isInteger(depth)||depth<0||depth>state.builderPath.length)return;
+  const oldPath=[...state.builderPath];state.builderPath=oldPath.slice(0,depth);state.builderTrail=state.builderTrail.slice(0,depth);state.tool=null;state.selected=oldPath.slice(0,depth+1).join('/');
+  world.setTool(null);buildScene();if(state.screen==='paused')resumeGame();world.startWalk({reset:true});if(state.selected)world.teleportToNode(state.selected);renderHotbar();scheduleSave();
+}
+function showModuleAuthoring(){
+  if(state.mode!=='build'){enterBuilder();pauseGame('library');}
+  if(state.builderPath.length){toast('Return to the root circuit to package a reusable component.');return;}
+  const nodes=[...state.builder.nodes.values()].filter(n=>!['input','switch','output'].includes(n.type));
+  moduleDraft={nodeIds:new Set(),portNames:{}};
+  showModal('Create reusable module',moduleAuthoring(nodes),`<button class="btn" data-action="close-modal">Cancel</button><button class="btn primary" data-action="package-module">Package selection</button>`);
+  $('.modal').classList.add('module-authoring-modal');updateModulePreview();
+}
+function updateModulePreview(){
+  if(!moduleDraft||!$('#module-boundaries'))return;
+  const button=$('[data-action="package-module"]');
+  try{const ids=[...moduleDraft.nodeIds],preview=ids.length?state.builder.previewModule(ids):null;$('#module-boundaries').innerHTML=moduleBoundaryFields(preview,moduleDraft.portNames);$('#module-error').textContent='';button.disabled=!preview;}
+  catch(error){$('#module-boundaries').innerHTML='';$('#module-error').textContent=error.message;button.disabled=true;}
+}
+function packageModule(){
+  if(state.mode!=='build'||state.builderPath.length||!moduleDraft)return;
+  try{const name=$('#module-name').value.trim(),portNames=Object.fromEntries([...document.querySelectorAll('[data-module-port]')].map(el=>[el.dataset.modulePort,el.value.trim()]));
+    const result=state.builder.createModule({name,nodeIds:[...moduleDraft.nodeIds],portNames});
+    state.selected=result.instanceId;state.tool=null;moduleDraft=null;closeModal();world.setTool(null);rebuildBuilder();showWorkbench('library');renderHotbar();scheduleSave();toast(`${name} saved to your library. The selected group is now an instance.`);
+  }catch(error){$('#module-error').textContent=error.message;}
+}
 function renderLibrary(){
   const descriptions={input:'An editable eight-bit value.',switch:'A one-bit control input.',output:'Observe the value on a bus.',register:'Capture D on a clock edge when EN is one.',mux:'Select A or B with a one-bit S input.',add:'Eight-bit addition with wraparound.',sub:'Eight-bit subtraction with wraparound.',mul:'Keep the low eight bits of a product.',eq:'Compare two buses; one-bit equality output.',lt:'Unsigned less-than; one-bit output.',shl:'Logical left shift; zero fill.',shr:'Logical right shift; zero fill.',and:'Bitwise AND.',or:'Bitwise OR.',xor:'Bitwise exclusive OR.',not:'Invert each bit.'};
-  $('#library-station').innerHTML=`<div class="navigator-intro"><p>Choose a part, resume flight, and aim at an empty area of the grid to place it with E. Use Wire to connect output ports to input ports of the same width. Comparators can drive mux selection and register enables.</p><p>These primitives simulate and export structural Verilog. The architecture lab’s ROB, rename map, and queues are a separate fixed model.</p></div><div class="component-library-grid">${Object.entries(BUILDER_TYPES).map(([type,spec])=>`<button class="component-library-card" data-build-type="${esc(type)}" aria-label="Choose ${esc(spec.label)}"><span style="color:${kindColor(spec.kind)}">${icon(spec.kind==='alu'?'plus':spec.kind==='register'?'chip':'blocks',23)}</span><strong>${esc(spec.label)}</strong><p>${esc(descriptions[type]||'A circuit component.')}</p><small>${spec.ports.map(p=>`${p.name} ${p.direction==='input'?'IN':'OUT'}[${p.width}]`).join(' · ')}</small></button>`).join('')}</div>`;
+  $('#library-station').innerHTML=`<div class="navigator-intro"><p>Choose a part, resume flight, and aim at an empty area of the grid to place it with E. Use Wire to connect output ports to input ports of the same width. Comparators can drive mux selection and register enables.</p><p>Primitives and your reusable modules simulate and export structural Verilog. The architecture lab’s ROB, rename map, and queues are a separate fixed model.</p>${state.mode==='build'&&state.builderPath.length?'<p class="library-readonly-note">You are inspecting an instance. <button class="btn small" data-action="root-module">Return to root to build</button></p>':''}</div>${moduleCards(state.builder.listModules())}<div class="library-section-heading primitives-heading"><span class="eyebrow">PRIMITIVE COMPONENTS</span></div><div class="component-library-grid">${Object.entries(BUILDER_TYPES).map(([type,spec])=>`<button class="component-library-card" data-build-type="${esc(type)}" aria-label="Choose ${esc(spec.label)}"><span style="color:${kindColor(spec.kind)}">${icon(spec.kind==='alu'?'plus':spec.kind==='register'?'chip':'blocks',23)}</span><strong>${esc(spec.label)}</strong><p>${esc(descriptions[type]||'A circuit component.')}</p><small>${spec.ports.map(p=>`${p.name} ${p.direction==='input'?'IN':'OUT'}[${p.width}]`).join(' · ')}</small></button>`).join('')}</div>`;
 }
 
 
@@ -391,7 +438,7 @@ function renderGuide(){
 function showModal(title,body,actions=''){
   $('.modal-backdrop')?.remove();const element=document.createElement('div');element.className='modal-backdrop';element.innerHTML=`<section class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><header><h2>${esc(title)}</h2><button class="btn ghost icon-only" data-action="close-modal" aria-label="Close dialog">${icon('close',18)}</button></header>${body}${actions?`<div class="modal-actions">${actions}</div>`:''}</section>`;document.body.appendChild(element);element.addEventListener('click',e=>{if(e.target===element)closeModal();});element.querySelector('select,textarea,button')?.focus();
 }
-function closeModal(){$('.modal-backdrop')?.remove();}
+function closeModal(){$('.modal-backdrop')?.remove();moduleDraft=null;}
 function showControls(){showModal('How to play',`<p>Fly through the machine and explore a computer built from simple parts.</p><div class="control-grid"><span><kbd>W A S D</kbd> Move</span><span><kbd>MOUSE</kbd> Look / drag</span><span><kbd>SPACE</kbd> Fly up</span><span><kbd>Q / C</kbd> Fly down</span><span><kbd>SHIFT</kbd> Boost</span><span><kbd>E</kbd> Inspect</span><span><kbd>ESC</kbd> Pause &amp; RTL</span></div><p>Choose <strong>Start guided journey</strong> for your first visit. Eli will guide you from a register to a saved number. Use the hotbar to step the processor, inspect memory, and enter the building sandbox.</p>`,`<button class="btn primary" data-action="close-modal">Got it ${icon('check',14)}</button>`);}
 function showOooProgram(){
   if(state.mode!=='ooo')return;pauseGame('architecture');
@@ -423,7 +470,7 @@ async function validateCpu(){
   for(const program of PROGRAMS){try{const lab=new CpuLab(state.compiled.netlist,{latency:state.latency,cache:state.cache});lab.input=42;lab.loadProgram(program.source);for(let i=0;i<1200&&!lab.halted;i++)lab.stepInstruction();if(!lab.halted||lab.getState().fault||lab.display!==expected[program.id])throw new Error(`Expected ${expected[program.id]}, got ${lab.display}`);results.push(`<p class="test-pass">${icon('check',14)} ${esc(program.name)} · display ${lab.display} · ${lab.cycle} clocks</p>`);}catch(error){results.push(`<p class="test-fail">${esc(program.name)} · ${esc(error.message)}</p>`);}}
   const el=$('#validation-results');if(el)el.innerHTML=results.join('')+'<p>Your current execution was preserved.</p>';
 }
-function projectData(){return{format:'silicon-trails',version:1,name:'Processor Atlas',mode:state.mode,view:state.view,exampleId:state.exampleId,source:source(),compiled:state.compiled,program:state.programSource,programName:state.programName,builder:state.builder.toJSON(),config:{cache:state.cache,latency:state.latency,breakpoint:state.breakpoint,watchAddress:state.watchAddress},game:{viewSettings:world.getViewSettings(),architecture:state.ooo?.snapshot()||null,started:state.hasSave,guided:state.guided,tutorial:tutorial.snapshot(),builderNotebook:{signature:state.builderSignature,text:state.builderSource},execution:captureExecution({lab:state.lab,sim:state.sim})}};}
+function projectData(){return{format:'silicon-trails',version:1,name:'Processor Atlas',mode:state.mode,view:state.view,exampleId:state.exampleId,source:source(),compiled:state.compiled,program:state.programSource,programName:state.programName,builder:state.builder.toJSON(),config:{cache:state.cache,latency:state.latency,breakpoint:state.breakpoint,watchAddress:state.watchAddress},game:{builderView:{path:[...state.builderPath],trail:[...state.builderTrail]},viewSettings:world.getViewSettings(),architecture:state.ooo?.snapshot()||null,started:state.hasSave,guided:state.guided,tutorial:tutorial.snapshot(),builderNotebook:{signature:state.builderSignature,text:state.builderSource},execution:captureExecution({lab:state.lab,sim:state.sim})}};}
 function saveNow(){if(!state.ready||!state.hasSave)return;try{localStorage.setItem(STORAGE,JSON.stringify(projectData()));$('#save-label').textContent='WORLD SAVED';}catch{$('#save-label').textContent='SAVE WORLD TO KEEP A COPY';}}
 function scheduleSave(){clearTimeout(saveTimer);if(!state.hasSave)return;$('#save-label').textContent='SAVING…';saveTimer=setTimeout(saveNow,500);}
 function downloadProject(){
@@ -439,6 +486,7 @@ function restoreProject(data){
   state.guided=!!data.game?.guided;state.builderSource=typeof data.game?.builderNotebook?.text==='string'?data.game.builderNotebook.text:null;state.builderSignature=typeof data.game?.builderNotebook?.signature==='string'?data.game.builderNotebook.signature:null;
   let restored=false;try{restored=restoreExecution(data.game?.execution,{lab:state.lab,sim:state.sim});}catch(error){console.warn(error.message);}
   state.eventCursor=state.lab?.events.length||0;
+  if(state.mode==='build'&&Array.isArray(data.game?.builderView?.path)){try{state.builder.getDesign({path:data.game.builderView.path});state.builderPath=[...data.game.builderView.path];state.builderTrail=Array.isArray(data.game.builderView.trail)?data.game.builderView.trail.map(String):[];buildScene();}catch{state.builderPath=[];state.builderTrail=[];buildScene();}}
   if(restored||data.game?.tutorial?.complete)tutorial.restore(data.game?.tutorial);else tutorial.reset();
   world.applyViewSettings(data.game?.viewSettings||{});syncViewControls();state.hasSave=true;$('#continue-button').hidden=false;scheduleSave();
 }
@@ -450,7 +498,9 @@ function manualStep(kind){if(state.screen==='start')return;stop();step(kind);if(
 
 // Menus own focus while paused. World interaction only runs in the playing state.
 document.addEventListener('click',event=>{
-  const partChoice=event.target.closest('[data-build-type]');if(partChoice){const type=partChoice.dataset.buildType;if(state.mode!=='build')enterBuilder();else resumeGame();state.tool=null;setTool(type);toast(`${BUILDER_TYPES[type].label} selected. Aim at the grid and press E to place it.`);return;}
+  const level=event.target.closest('[data-builder-level]');if(level){setBuilderLevel(Number(level.dataset.builderLevel));return;}
+  const moduleChoice=event.target.closest('[data-module-type]');if(moduleChoice){if(state.mode==='build'&&state.builderPath.length){toast('Return to the root circuit to place components.');return;}const id=moduleChoice.dataset.moduleType;if(state.mode!=='build')enterBuilder();else resumeGame();state.tool=null;setTool(`module:${id}`);toast('Module selected. Aim at the grid and press E to place an independent instance.');return;}
+  const partChoice=event.target.closest('[data-build-type]');if(partChoice){if(state.mode==='build'&&state.builderPath.length){toast('Return to the root circuit to place components.');return;}const type=partChoice.dataset.buildType;if(state.mode!=='build')enterBuilder();else resumeGame();state.tool=null;setTool(type);toast(`${BUILDER_TYPES[type].label} selected. Aim at the grid and press E to place it.`);return;}
   const nodeSelect=event.target.closest('[data-select-node]');if(nodeSelect){state.selected=nodeSelect.dataset.selectNode;world.select(state.selected);showWorkbench('inspect');return;}
   const nodeFocus=event.target.closest('[data-focus-node]');if(nodeFocus){state.selected=nodeFocus.dataset.focusNode;world.select(state.selected);resumeGame();world.teleportToNode(state.selected);return;}
   const station=event.target.closest('button[data-station]');if(station){showWorkbench(station.dataset.station);return;}
@@ -462,6 +512,8 @@ document.addEventListener('click',event=>{
     case 'start-ooo':enterArchitecture({fresh:true});break;case 'enter-ooo':enterArchitecture();break;
     case 'architecture':pauseGame('architecture');break;case 'navigator':pauseGame('navigator');break;
     case 'library':pauseGame('library');break;
+    case 'create-module':showModuleAuthoring();break;case 'package-module':packageModule();break;
+    case 'open-module':openBuilderModule();break;case 'parent-module':setBuilderLevel(state.builderPath.length-1);break;case 'root-module':setBuilderLevel(0);break;
     case 'ooo-program':showOooProgram();break;
     case 'ooo-config':showOooConfig();break;
     case 'apply-ooo-config':{const config=Object.fromEntries([...document.querySelectorAll('[data-config]')].map(e=>[e.dataset.config,Number(e.value)]));const model=new OoOLab({...config,source:state.ooo.programSource});state.ooo=model;state.resumeRunning=false;closeModal();buildScene();renderLive();scheduleSave();toast('Architecture configuration applied.');break;}
@@ -480,15 +532,16 @@ document.addEventListener('click',event=>{
     case 'load-program':{const text=$('#assembly-source').value;state.lab.loadProgram(text);if(text!==PROGRAMS[0].source){state.guided=false;tutorial.stop();renderTutorial();}state.programSource=text;state.programName=PROGRAMS.find(p=>p.id===$('#program-example').value)?.name||'My program';state.eventCursor=0;state.resumeRunning=false;closeModal();showWorkbench('trace');renderLive();scheduleSave();toast('Program loaded. Resume or step it here.');break;}
     case 'close-modal':closeModal();break;case 'validate':validateCpu();break;case 'import':$('#project-file').click();break;case 'export':downloadProject();break;
     case 'watch-memory':state.watchAddress=state.watchAddress===state.memoryAddress?null:state.memoryAddress;renderPanel();toast(state.watchAddress===null?'Memory watch cleared.':`The world will pause when address 0x${hex(state.watchAddress)} is written.`);scheduleSave();break;
-    case 'delete':if(state.mode==='build'&&state.selected){state.builder.remove(state.selected);state.selected=null;rebuildBuilder();renderInspector();toast('Block removed.');}break;
-    case 'disconnect':{const port=event.target.closest('button').dataset.port;state.builder.disconnectInput(state.selected,port);rebuildBuilder();renderInspector();toast('Port disconnected. Its input is now unknown.');break;}
+    case 'delete':if(state.mode==='build'&&!state.builderPath.length&&state.selected){state.builder.remove(state.selected);state.selected=null;rebuildBuilder();renderInspector();toast('Instance or part removed. Its reusable definition stays in the library.');}break;
+    case 'disconnect':{if(state.mode!=='build'||state.builderPath.length)break;const port=event.target.closest('button').dataset.port;state.builder.disconnectInput(state.selected,port);rebuildBuilder();renderInspector();toast('Port disconnected. Its input is now unknown.');break;}
     case 'export-rtl':{const text=state.builder.toVerilog();state.builderSource=text;state.builderSignature=text;showWorkbench('rtl');setSource(text);state.dirty=true;$('#editor-dot').textContent='●';compileStatus('Structural Verilog from your blocks. Synthesize to rebuild this circuit.');break;}
   }}catch(error){toast(error.message,true);}
   if(state.screen==='playing')world.canvas?.focus({preventScroll:true});
 });
 document.addEventListener('change',event=>{
   const el=event.target;try{
-    if(el.matches('[data-input]'))setInput(el.dataset.input,el.value.trim()===''?null:Number(el.value),el.dataset.builderInput);
+    if(el.matches('[data-module-node]')&&moduleDraft){if(el.checked)moduleDraft.nodeIds.add(el.dataset.moduleNode);else moduleDraft.nodeIds.delete(el.dataset.moduleNode);updateModulePreview();}
+    else if(el.matches('[data-input]'))setInput(el.dataset.input,el.value.trim()===''?null:Number(el.value),el.dataset.builderInput);
     else if(el.id==='cpu-input'){const n=Number(el.value);if(!Number.isInteger(n)||n<0||n>255)throw new Error('Input byte must be between 0 and 255.');state.lab.input=n;}
     else if(el.id==='rtl-example'&&el.value!=='custom')loadExample(el.value);
     else if(el.id==='program-example'){const p=PROGRAMS.find(p=>p.id===el.value);if(p)$('#assembly-source').value=p.source;}
@@ -502,7 +555,8 @@ document.addEventListener('change',event=>{
 });
 document.addEventListener('input',event=>{
   const el=event.target;
-  if(el.id==='component-scale'||el.id==='layout-scale'){
+  if(el.matches('[data-module-port]')&&moduleDraft)moduleDraft.portNames[el.dataset.modulePort]=el.value;
+  else if(el.id==='component-scale'||el.id==='layout-scale'){
     if(el.id==='component-scale')world.setComponentScale(Number(el.value));else world.setLayoutScale(Number(el.value));
     syncViewControls();scheduleSave();
   }else if(el.id==='part-scale'&&state.selected){world.setPartScale(state.selected,Number(el.value));$('#part-scale-value').textContent=`${el.value}×`;scheduleSave();}
@@ -550,7 +604,7 @@ async function boot(){
   try{const response=await fetch(`${BASE}examples/cpu.json`);if(!response.ok)throw new Error('The processor could not be loaded.');state.defaultCompiled=await response.json();useCompiled(state.defaultCompiled,{exampleId:'cpu'});
     try{const saved=localStorage.getItem(STORAGE);if(saved)restoreProject(JSON.parse(saved));}catch(error){console.warn('Saved world could not be restored:',error.message);}
     state.ready=true;state.screen='start';state.workbench=null;world.startPanorama();syncScreen();renderHotbar();renderTutorial();$('#title-status').textContent='FLY IN. FOLLOW THE DATA.';document.querySelectorAll('[data-action="start-guided"],[data-action="start-free"],[data-action="start-ooo"]').forEach(b=>b.disabled=false);
-    window.siliconTrails={getState:()=>state.mode==='ooo'?state.ooo.getState():state.lab?.getState()||{cycle:currentCycle()},getLab:()=>state.lab,getArchitectureLab:()=>state.ooo,getSimulator:()=>activeSim(),getBuilder:()=>state.builder,getCompiled:()=>state.compiled,getGraph:()=>state.graph,getWorld:()=>world,getGameState:()=>({screen:state.screen,workbench:state.workbench,mode:state.mode,running:state.running,tutorial:tutorial.getCurrent(),player:world.getPlayerState()}),startGame,pauseGame,resumeGame,enterArchitecture,setMode,step,loadExample,exportProject:projectData,restoreProject};
+    window.siliconTrails={getState:()=>state.mode==='ooo'?state.ooo.getState():state.lab?.getState()||{cycle:currentCycle()},getLab:()=>state.lab,getArchitectureLab:()=>state.ooo,getSimulator:()=>activeSim(),getBuilder:()=>state.builder,getCompiled:()=>state.compiled,getGraph:()=>state.graph,getWorld:()=>world,getGameState:()=>({screen:state.screen,workbench:state.workbench,mode:state.mode,running:state.running,builderPath:[...state.builderPath],tutorial:tutorial.getCurrent(),player:world.getPlayerState()}),startGame,pauseGame,resumeGame,enterArchitecture,setMode,step,loadExample,exportProject:projectData,restoreProject};
     requestAnimationFrame(animate);
   }catch(error){$('#title-status').textContent=error.message;toast(error.message,true);}
 }
